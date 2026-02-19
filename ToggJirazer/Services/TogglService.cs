@@ -5,7 +5,7 @@ using ToggJirazer.Models;
 
 namespace ToggJirazer.Services;
 
-public class TogglService
+public class TogglService : IDisposable
 {
     private readonly HttpClient _httpClient;
     private readonly TogglConfig _config;
@@ -121,4 +121,6 @@ public class TogglService
         public string? Project { get; set; }
         public long Pid { get; set; }
     }
+
+    public void Dispose() => _httpClient.Dispose();
 }

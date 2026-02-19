@@ -91,7 +91,7 @@ Console.WriteLine();
 try
 {
     // Fetch Toggl data
-    var togglService = new TogglService(appConfig.Toggl);
+    using var togglService = new TogglService(appConfig.Toggl);
     var entries = await togglService.GetDetailedReportAsync(startDate, endDate);
 
     if (entries.Count == 0)
@@ -103,7 +103,7 @@ try
     Console.WriteLine();
 
     // Build report
-    var jiraService = new JiraService(appConfig.Jira);
+    using var jiraService = new JiraService(appConfig.Jira);
     var reportService = new ReportService(jiraService);
     var rows = await reportService.BuildReportAsync(entries);
 

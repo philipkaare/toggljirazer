@@ -5,7 +5,7 @@ using ToggJirazer.Models;
 
 namespace ToggJirazer.Services;
 
-public class JiraService
+public class JiraService : IDisposable
 {
     private readonly HttpClient _httpClient;
     private readonly JiraConfig _config;
@@ -115,4 +115,6 @@ public class JiraService
     {
         public string? Name { get; set; }
     }
+
+    public void Dispose() => _httpClient.Dispose();
 }
