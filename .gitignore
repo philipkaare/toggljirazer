@@ -1,0 +1,13 @@
+## .NET build artifacts
+bin/
+obj/
+
+## User-specific files
+*.user
+*.suo
+
+## Generated reports
+*.csv
+
+## Do not commit real config with credentials
+# appsettings.local.json
