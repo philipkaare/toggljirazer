@@ -111,8 +111,20 @@ try
     Console.WriteLine($"Report contains {rows.Count} rows.");
     Console.WriteLine();
 
-    // Write CSV
-    reportService.WriteCsv(rows, appConfig.Report.OutputFile);
+    // Write report in configured format
+    var format = appConfig.Report.Format?.Trim().ToLowerInvariant();
+    if (format == "xlsx")
+    {
+        reportService.WriteXlsx(rows, appConfig.Report.OutputFile);
+    }
+    else
+    {
+        if (!string.IsNullOrEmpty(format) && format != "csv")
+        {
+            Console.Error.WriteLine($"Warning: Unrecognized format '{appConfig.Report.Format}'. Defaulting to CSV.");
+        }
+        reportService.WriteCsv(rows, appConfig.Report.OutputFile);
+    }
 }
 catch (InvalidOperationException ex)
 {

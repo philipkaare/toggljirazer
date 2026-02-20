@@ -3,7 +3,7 @@ A console application to generate reports based on Jira and Toggl Track.
 
 ## Overview
 
-ToggJirazer fetches detailed time entries from the [Toggl Track API](https://developers.track.toggl.com/docs/) for a specific project and time period, cross-references them with [Jira](https://developer.atlassian.com/cloud/jira/platform/rest/v3/) issues (matched by issue key found in the time entry description), and produces a CSV report.
+ToggJirazer fetches detailed time entries from the [Toggl Track API](https://developers.track.toggl.com/docs/) for a specific project and time period, cross-references them with [Jira](https://developer.atlassian.com/cloud/jira/platform/rest/v3/) issues (matched by issue key found in the time entry description), and produces a report in CSV or XLSX format.
 
 ## Report Columns
 
@@ -44,7 +44,8 @@ Edit `ToggJirazer/appsettings.json` before running:
   "Report": {
     "StartDate": "2024-01-01",
     "EndDate": "2024-01-31",
-    "OutputFile": "report.csv"
+    "OutputFile": "report.csv",
+    "Format": "csv"
   }
 }
 ```
@@ -56,7 +57,8 @@ Edit `ToggJirazer/appsettings.json` before running:
 - **Jira:UserEmail** – Email address for Jira authentication
 - **Jira:ApiToken** – Create at https://id.atlassian.com/manage-profile/security/api-tokens
 - **Report:StartDate / EndDate** – Optional. Defaults to the current calendar month if not set.
-- **Report:OutputFile** – Output CSV file path (default: `report.csv`)
+- **Report:OutputFile** – Output file path (default: `report.csv`)
+- **Report:Format** – Output format: `csv` (default) or `xlsx`
 
 ## How It Works
 
