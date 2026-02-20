@@ -20,6 +20,8 @@ public class JiraConfig
     public string BaseUrl { get; set; } = string.Empty;
     public string UserEmail { get; set; } = string.Empty;
     public string ApiToken { get; set; } = string.Empty;
+    public string BudgetFieldName { get; set; } = "Budget";
+    public string AccountFieldName { get; set; } = "Account";
 }
 
 public class ReportConfig

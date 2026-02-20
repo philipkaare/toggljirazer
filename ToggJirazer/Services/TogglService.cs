@@ -37,12 +37,13 @@ public class TogglService : IDisposable
     {
         var allEntries = new List<TogglTimeEntry>();
         var url = $"https://track.toggl.com/analytics/api/organizations/{_config.OrganizationId}/query" +
-                  "?response_format=json_row&include_dicts=true";
+                  "?response_format=json_row";
         int page = 1;
         const int perPage = 50;
 
         Console.WriteLine($"Fetching Toggl entries from {startDate:yyyy-MM-dd} to {endDate:yyyy-MM-dd}...");
 
+        var users = await GetWorkspaceUsersAsync();
         while (true)
         {
             Console.WriteLine($"  Fetching page {page}...");
@@ -81,19 +82,10 @@ public class TogglService : IDisposable
             if (analyticsResponse?.Data == null || analyticsResponse.Data.Count == 0)
                 break;
 
-            // The API returns columns in the order of the requested attributes (AttributeNames),
-            // so the fallback is always aligned with the request even if the schema is omitted.
-            var schema = analyticsResponse.Schema ?? [.. AttributeNames];
-            var schemaIndex = schema
-                .Select((name, idx) => (name, idx))
-                .ToDictionary(x => x.name, x => x.idx, StringComparer.OrdinalIgnoreCase);
-
-            var users = BuildUserLookup(analyticsResponse.Dicts);
-
             var pageEntryCount = analyticsResponse.Data.Count;
             foreach (var row in analyticsResponse.Data)
             {
-                var entry = MapAnalyticsRow(schemaIndex, row, users);
+                var entry = MapAnalyticsEntry(row, users);
                 if (entry != null)
                     allEntries.Add(entry);
             }
@@ -155,104 +147,124 @@ public class TogglService : IDisposable
         };
     }
 
-    private static Dictionary<string, string> BuildUserLookup(JsonElement? dicts)
+    private async Task<Dictionary<long, string>> GetWorkspaceUsersAsync()
     {
-        var users = new Dictionary<string, string>();
-        if (dicts == null || dicts.Value.ValueKind != JsonValueKind.Object)
-            return users;
+        var url = $"https://api.track.toggl.com/api/v9/organizations/{_config.OrganizationId}" +
+                  $"/workspaces/{_config.WorkspaceId}/workspace_users";
 
-        if (!dicts.Value.TryGetProperty("users", out var usersElement) ||
-            usersElement.ValueKind != JsonValueKind.Object)
-            return users;
-
-        foreach (var user in usersElement.EnumerateObject())
+        HttpResponseMessage response;
+        try
         {
-            if (user.Value.TryGetProperty("name", out var nameProp))
-                users[user.Name] = nameProp.GetString() ?? string.Empty;
+            response = await _httpClient.GetAsync(url);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"Failed to connect to Toggl API: {ex.Message}. " +
+                "Please check your network connection.", ex);
         }
 
-        return users;
+        if (!response.IsSuccessStatusCode)
+        {
+            var error = await response.Content.ReadAsStringAsync();
+            throw new InvalidOperationException(
+                $"Toggl API returned {(int)response.StatusCode} when fetching workspace users: {error}");
+        }
+
+        var json = await response.Content.ReadAsStringAsync();
+        var workspaceUsers = JsonSerializer.Deserialize<List<WorkspaceUser>>(json, JsonOptions) ?? [];
+        return workspaceUsers
+            .Where(u => u.UserId != 0 && u.Name != null)
+            .ToDictionary(u => u.UserId, u => u.Name!);
     }
 
-    private static TogglTimeEntry? MapAnalyticsRow(
-        Dictionary<string, int> schemaIndex,
-        List<JsonElement> row,
-        Dictionary<string, string> users)
+    private static TogglTimeEntry? MapAnalyticsEntry(
+        TogglAnalyticsEntry row,
+        Dictionary<long, string> users)
     {
-        var id = GetLong(row, schemaIndex, "time_entry_id");
-        if (id == 0)
+        if (row.TimeEntryId == 0)
             return null;
 
-        var description = GetString(row, schemaIndex, "description") ?? string.Empty;
-        var durationSeconds = GetLong(row, schemaIndex, "duration");
-        var projectId = GetLong(row, schemaIndex, "project_id");
-        var start = GetDateTime(row, schemaIndex, "start");
-        var stop = GetDateTime(row, schemaIndex, "stop");
-        var userId = GetLong(row, schemaIndex, "user_id").ToString();
-        users.TryGetValue(userId, out var userName);
+        users.TryGetValue(row.UserId, out var userName);
+
+        DateTime start = default, stop = default;
+        if (row.Start != null)
+            DateTime.TryParse(row.Start, null, System.Globalization.DateTimeStyles.RoundtripKind, out start);
+        if (row.Stop != null)
+            DateTime.TryParse(row.Stop, null, System.Globalization.DateTimeStyles.RoundtripKind, out stop);
 
         return new TogglTimeEntry
         {
-            Id = id,
-            Description = description,
-            User = userName ?? userId,
+            Id = row.TimeEntryId,
+            Description = row.Description ?? string.Empty,
+            User = userName ?? row.UserId.ToString(),
             Email = string.Empty,
             Start = start,
             End = stop,
-            Duration = durationSeconds * 1000L,
+            Duration = row.Duration,
             Project = string.Empty,
-            ProjectId = projectId
+            ProjectId = row.ProjectId ?? 0
         };
     }
 
-    private static long GetLong(List<JsonElement> row, Dictionary<string, int> schemaIndex, string column)
-    {
-        if (!schemaIndex.TryGetValue(column, out var idx) || idx >= row.Count)
-            return 0;
-        var element = row[idx];
-        if (element.ValueKind == JsonValueKind.Number)
-        {
-            if (element.TryGetInt64(out var longVal))
-                return longVal;
-            if (element.TryGetDouble(out var dblVal))
-                return (long)Math.Round(dblVal);
-        }
-        return 0;
-    }
-
-    private static string? GetString(List<JsonElement> row, Dictionary<string, int> schemaIndex, string column)
-    {
-        if (!schemaIndex.TryGetValue(column, out var idx) || idx >= row.Count)
-            return null;
-        var element = row[idx];
-        return element.ValueKind == JsonValueKind.String ? element.GetString() : null;
-    }
-
-    private static DateTime GetDateTime(List<JsonElement> row, Dictionary<string, int> schemaIndex, string column)
-    {
-        if (!schemaIndex.TryGetValue(column, out var idx) || idx >= row.Count)
-            return default;
-        var element = row[idx];
-        if (element.ValueKind == JsonValueKind.String)
-        {
-            var s = element.GetString();
-            if (s != null && DateTime.TryParse(s, null, System.Globalization.DateTimeStyles.RoundtripKind, out var dt))
-                return dt;
-        }
-        return default;
-    }
-
     // Response models for the analytics API
+    private sealed class WorkspaceUser
+    {
+        [JsonPropertyName("user_id")]
+        public long UserId { get; set; }
+
+        [JsonPropertyName("uid")]
+        public long Uid { get; set; }
+
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
+
+        [JsonPropertyName("email")]
+        public string? Email { get; set; }
+    }
+
+    private sealed class TogglAnalyticsEntry
+    {
+        [JsonPropertyName("time_entry_id")]
+        public long TimeEntryId { get; set; }
+
+        [JsonPropertyName("description")]
+        public string? Description { get; set; }
+
+        [JsonPropertyName("duration")]
+        public long Duration { get; set; }
+
+        [JsonPropertyName("project_id")]
+        public long? ProjectId { get; set; }
+
+        [JsonPropertyName("start")]
+        public string? Start { get; set; }
+
+        [JsonPropertyName("stop")]
+        public string? Stop { get; set; }
+
+        [JsonPropertyName("user_id")]
+        public long UserId { get; set; }
+
+        [JsonPropertyName("user_timezone")]
+        public string? UserTimezone { get; set; }
+
+        [JsonPropertyName("billable")]
+        public bool Billable { get; set; }
+
+        [JsonPropertyName("billable_duration")]
+        public long BillableDuration { get; set; }
+
+        [JsonPropertyName("client_id")]
+        public long? ClientId { get; set; }
+
+        [JsonPropertyName("tag_ids")]
+        public List<long>? TagIds { get; set; }
+    }
+
     private sealed class TogglAnalyticsResponse
     {
-        [JsonPropertyName("schema")]
-        public List<string>? Schema { get; set; }
-
-        [JsonPropertyName("data")]
-        public List<List<JsonElement>>? Data { get; set; }
-
-        [JsonPropertyName("dicts")]
-        public JsonElement? Dicts { get; set; }
+        [JsonPropertyName("data_json_row")]
+        public List<TogglAnalyticsEntry>? Data { get; set; }
 
         [JsonPropertyName("pagination")]
         public TogglAnalyticsPagination? Pagination { get; set; }

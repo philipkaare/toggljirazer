@@ -10,6 +10,9 @@ public class JiraService : IDisposable
     private readonly HttpClient _httpClient;
     private readonly JiraConfig _config;
 
+    private string? _budgetFieldId;
+    private string? _accountFieldId;
+
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
@@ -26,9 +29,47 @@ public class JiraService : IDisposable
         _httpClient.BaseAddress = new Uri(config.BaseUrl.TrimEnd('/') + "/");
     }
 
+    private async Task ResolveFieldIdsAsync()
+    {
+        if (_budgetFieldId != null && _accountFieldId != null) return;
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient.GetAsync("rest/api/3/field");
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"Failed to fetch Jira field metadata: {ex.Message}", ex);
+        }
+
+        if (!response.IsSuccessStatusCode) return;
+
+        var json = await response.Content.ReadAsStringAsync();
+        var fields = JsonSerializer.Deserialize<List<JiraFieldResponse>>(json, JsonOptions);
+        if (fields == null) return;
+
+        _budgetFieldId = fields.FirstOrDefault(f =>
+            string.Equals(f.Name, _config.BudgetFieldName, StringComparison.OrdinalIgnoreCase))?.Id;
+        _accountFieldId = fields.FirstOrDefault(f =>
+            string.Equals(f.Name, _config.AccountFieldName, StringComparison.OrdinalIgnoreCase))?.Id;
+
+        if (_budgetFieldId == null)
+            Console.WriteLine($"  Warning: Jira field '{_config.BudgetFieldName}' not found in field metadata.");
+        if (_accountFieldId == null)
+            Console.WriteLine($"  Warning: Jira field '{_config.AccountFieldName}' not found in field metadata.");
+    }
+
     public async Task<JiraIssue?> GetIssueAsync(string issueKey)
     {
-        var url = $"rest/api/3/issue/{Uri.EscapeDataString(issueKey)}?fields=summary,issuetype,customfield_10016,customfield_10014";
+        await ResolveFieldIdsAsync();
+
+        var fieldsParam = "summary,issuetype";
+        if (_budgetFieldId != null) fieldsParam += $",{_budgetFieldId}";
+        if (_accountFieldId != null) fieldsParam += $",{_accountFieldId}";
+
+        var url = $"rest/api/3/issue/{Uri.EscapeDataString(issueKey)}?fields={fieldsParam}";
 
         HttpResponseMessage response;
         try
@@ -67,13 +108,20 @@ public class JiraService : IDisposable
         var issue = JsonSerializer.Deserialize<JiraIssueResponse>(json, JsonOptions);
         if (issue == null) return null;
 
+        var budgetValue = _budgetFieldId != null
+            ? ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(_budgetFieldId))
+            : null;
+        var accountValue = _accountFieldId != null
+            ? ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(_accountFieldId))
+            : null;
+
         return new JiraIssue
         {
             Key = issue.Key ?? issueKey,
             IssueType = issue.Fields?.Issuetype?.Name ?? string.Empty,
             Summary = issue.Fields?.Summary ?? string.Empty,
-            Budget = ExtractStringField(issue.Fields?.Customfield_10016),
-            Account = ExtractStringField(issue.Fields?.Customfield_10014)
+            Budget = budgetValue,
+            Account = accountValue
         };
     }
 
@@ -85,6 +133,7 @@ public class JiraService : IDisposable
             {
                 JsonValueKind.String => element.GetString(),
                 JsonValueKind.Number => element.GetRawText(),
+                JsonValueKind.Array => element.EnumerateArray().Aggregate("", (acc, e) => acc + ExtractStringField(e) + ";").TrimEnd(';'),
                 JsonValueKind.Object => element.TryGetProperty("value", out var val)
                     ? val.GetString()
                     : element.TryGetProperty("name", out var name)
@@ -107,12 +156,19 @@ public class JiraService : IDisposable
     {
         public string? Summary { get; set; }
         public JiraIssueType? Issuetype { get; set; }
-        public object? Customfield_10016 { get; set; }
-        public object? Customfield_10014 { get; set; }
+
+        [System.Text.Json.Serialization.JsonExtensionData]
+        public Dictionary<string, object?>? CustomFields { get; set; }
     }
 
     private sealed class JiraIssueType
     {
+        public string? Name { get; set; }
+    }
+
+    private sealed class JiraFieldResponse
+    {
+        public string? Id { get; set; }
         public string? Name { get; set; }
     }
 
