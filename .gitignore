@@ -11,3 +11,4 @@ obj/
 
 ## Do not commit real config with credentials
 # appsettings.local.json
+/.vs
