@@ -1,4 +1,5 @@
 using System.Globalization;
+using ClosedXML.Excel;
 using CsvHelper;
 using CsvHelper.Configuration;
 using ToggJirazer.Models;
@@ -81,6 +82,44 @@ public class ReportService
         };
         using var csv = new CsvWriter(writer, config);
         csv.WriteRecords(rows);
+        Console.WriteLine($"Report written to: {Path.GetFullPath(outputPath)}");
+    }
+
+    /// <summary>
+    /// Writes the report rows to an Excel (.xlsx) file at the specified path.
+    /// </summary>
+    public void WriteXlsx(List<ReportRow> rows, string outputPath)
+    {
+        using var workbook = new XLWorkbook();
+        var worksheet = workbook.Worksheets.Add("Report");
+
+        // Write header row
+        var headers = new[]
+        {
+            "Issue Type", "Key", "Summary", "Budget", "Account",
+            "Person", "Start Date", "Time Used (HH:MM)", "Time Used (Decimal)"
+        };
+        for (int i = 0; i < headers.Length; i++)
+        {
+            worksheet.Cell(1, i + 1).Value = headers[i];
+        }
+
+        // Write data rows
+        for (int r = 0; r < rows.Count; r++)
+        {
+            var row = rows[r];
+            worksheet.Cell(r + 2, 1).Value = row.IssueType;
+            worksheet.Cell(r + 2, 2).Value = row.Key;
+            worksheet.Cell(r + 2, 3).Value = row.Summary;
+            worksheet.Cell(r + 2, 4).Value = row.Budget;
+            worksheet.Cell(r + 2, 5).Value = row.Account;
+            worksheet.Cell(r + 2, 6).Value = row.Person;
+            worksheet.Cell(r + 2, 7).Value = row.StartDate;
+            worksheet.Cell(r + 2, 8).Value = row.TimeUsedHHMM;
+            worksheet.Cell(r + 2, 9).Value = row.TimeUsedDecimal;
+        }
+
+        workbook.SaveAs(outputPath);
         Console.WriteLine($"Report written to: {Path.GetFullPath(outputPath)}");
     }
 

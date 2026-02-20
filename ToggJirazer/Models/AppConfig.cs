@@ -29,4 +29,5 @@ public class ReportConfig
     public string? StartDate { get; set; }
     public string? EndDate { get; set; }
     public string OutputFile { get; set; } = "report.csv";
+    public string Format { get; set; } = "csv";
 }
