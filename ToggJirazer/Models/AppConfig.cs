@@ -10,6 +10,7 @@ public class AppConfig
 public class TogglConfig
 {
     public string ApiToken { get; set; } = string.Empty;
+    public long OrganizationId { get; set; }
     public long WorkspaceId { get; set; }
     public long ProjectId { get; set; }
 }
