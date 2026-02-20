@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using ToggJirazer.Models;
 
 namespace ToggJirazer.Services;
@@ -27,26 +28,31 @@ public class TogglService : IDisposable
     public async Task<List<TogglTimeEntry>> GetDetailedReportAsync(DateTime startDate, DateTime endDate)
     {
         var allEntries = new List<TogglTimeEntry>();
+        var url = $"https://api.track.toggl.com/reports/api/v3/workspace/{_config.WorkspaceId}/search/time_entries";
+        int? firstRowNumber = null;
         int page = 1;
 
         Console.WriteLine($"Fetching Toggl entries from {startDate:yyyy-MM-dd} to {endDate:yyyy-MM-dd}...");
 
         while (true)
         {
-            var url = $"https://api.track.toggl.com/reports/api/v2/details" +
-                      $"?workspace_id={_config.WorkspaceId}" +
-                      $"&project_ids={_config.ProjectId}" +
-                      $"&since={startDate:yyyy-MM-dd}" +
-                      $"&until={endDate:yyyy-MM-dd}" +
-                      $"&page={page}" +
-                      $"&user_agent=ToggJirazer";
-
             Console.WriteLine($"  Fetching page {page}...");
+
+            var requestBody = new TogglSearchRequest
+            {
+                StartDate = startDate.ToString("yyyy-MM-dd"),
+                EndDate = endDate.ToString("yyyy-MM-dd"),
+                ProjectIds = _config.ProjectId != 0 ? new List<long> { _config.ProjectId } : null,
+                FirstRowNumber = firstRowNumber
+            };
+
+            var requestJson = JsonSerializer.Serialize(requestBody, JsonOptions);
+            var content = new StringContent(requestJson, Encoding.UTF8, "application/json");
 
             HttpResponseMessage response;
             try
             {
-                response = await _httpClient.GetAsync(url);
+                response = await _httpClient.PostAsync(url, content);
             }
             catch (Exception ex)
             {
@@ -68,58 +74,93 @@ public class TogglService : IDisposable
                     $"Toggl API returned {(int)response.StatusCode}: {error}");
             }
 
-            var json = await response.Content.ReadAsStringAsync();
-            var report = JsonSerializer.Deserialize<TogglDetailedReportResponse>(json, JsonOptions);
+            var responseJson = await response.Content.ReadAsStringAsync();
+            var rows = JsonSerializer.Deserialize<List<TogglSearchResponseRow>>(responseJson, JsonOptions);
 
-            if (report?.Data == null || report.Data.Count == 0)
+            if (rows == null || rows.Count == 0)
                 break;
 
-            allEntries.AddRange(report.Data.Select(MapEntry));
+            foreach (var row in rows)
+                allEntries.AddRange(row.TimeEntries.Select(te => MapEntry(row, te)));
 
-            Console.WriteLine($"  Retrieved {allEntries.Count} of {report.TotalCount} entries.");
+            Console.WriteLine($"  Retrieved {allEntries.Count} entries so far.");
 
-            if (allEntries.Count >= report.TotalCount)
+            if (response.Headers.TryGetValues("X-Next-Row-Number", out var headerValues) &&
+                int.TryParse(headerValues.FirstOrDefault(), out var nextRowNumber))
+            {
+                firstRowNumber = nextRowNumber;
+                page++;
+            }
+            else
+            {
                 break;
-
-            page++;
+            }
         }
 
         Console.WriteLine($"Total Toggl entries fetched: {allEntries.Count}");
         return allEntries;
     }
 
-    private static TogglTimeEntry MapEntry(TogglDetailedReportEntry entry) => new()
+    private static TogglTimeEntry MapEntry(TogglSearchResponseRow row, TogglSearchTimeEntry entry) => new()
     {
         Id = entry.Id,
-        Description = entry.Description ?? string.Empty,
-        User = entry.User ?? string.Empty,
-        Email = entry.Email ?? string.Empty,
+        Description = row.Description ?? string.Empty,
+        User = row.Username ?? string.Empty,
+        Email = string.Empty,           // v3 API does not expose user email
         Start = entry.Start,
-        End = entry.End,
-        Duration = entry.Dur,
-        Project = entry.Project ?? string.Empty,
-        ProjectId = entry.Pid
+        End = entry.Stop,
+        Duration = entry.Seconds * 1000L, // v3 returns seconds; convert to ms for compatibility
+        Project = string.Empty,         // v3 API returns project_id only, not project name
+        ProjectId = row.ProjectId
     };
 
-    // Internal response models for JSON deserialization
-    private sealed class TogglDetailedReportResponse
+    // Internal request/response models for the v3 search API
+    private sealed class TogglSearchRequest
     {
-        public List<TogglDetailedReportEntry> Data { get; set; } = new();
-        public int TotalCount { get; set; }
-        public int PerPage { get; set; }
+        [JsonPropertyName("start_date")]
+        public string StartDate { get; set; } = string.Empty;
+
+        [JsonPropertyName("end_date")]
+        public string EndDate { get; set; } = string.Empty;
+
+        [JsonPropertyName("project_ids")]
+        public List<long>? ProjectIds { get; set; }
+
+        [JsonPropertyName("first_row_number")]
+        public int? FirstRowNumber { get; set; }
     }
 
-    private sealed class TogglDetailedReportEntry
+    private sealed class TogglSearchResponseRow
     {
-        public long Id { get; set; }
+        [JsonPropertyName("user_id")]
+        public long UserId { get; set; }
+
+        [JsonPropertyName("username")]
+        public string? Username { get; set; }
+
+        [JsonPropertyName("project_id")]
+        public long ProjectId { get; set; }
+
+        [JsonPropertyName("description")]
         public string? Description { get; set; }
-        public string? User { get; set; }
-        public string? Email { get; set; }
+
+        [JsonPropertyName("time_entries")]
+        public List<TogglSearchTimeEntry> TimeEntries { get; set; } = new();
+    }
+
+    private sealed class TogglSearchTimeEntry
+    {
+        [JsonPropertyName("id")]
+        public long Id { get; set; }
+
+        [JsonPropertyName("seconds")]
+        public long Seconds { get; set; }
+
+        [JsonPropertyName("start")]
         public DateTime Start { get; set; }
-        public DateTime End { get; set; }
-        public long Dur { get; set; }
-        public string? Project { get; set; }
-        public long Pid { get; set; }
+
+        [JsonPropertyName("stop")]
+        public DateTime Stop { get; set; }
     }
 
     public void Dispose() => _httpClient.Dispose();
