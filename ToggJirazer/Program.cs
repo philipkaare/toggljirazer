@@ -26,6 +26,13 @@ if (appConfig.Toggl.WorkspaceId == 0)
     return 1;
 }
 
+if (appConfig.Toggl.OrganizationId == 0)
+{
+    Console.Error.WriteLine("Error: 'Toggl:OrganizationId' is missing or zero in appsettings.json.");
+    Console.Error.WriteLine("Remedy: Set your Toggl organization ID. You can find it in your Toggl organization settings.");
+    return 1;
+}
+
 if (appConfig.Toggl.ProjectId == 0)
 {
     Console.Error.WriteLine("Error: 'Toggl:ProjectId' is missing or zero in appsettings.json.");
