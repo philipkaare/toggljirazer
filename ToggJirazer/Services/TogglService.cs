@@ -282,5 +282,10 @@ public class TogglService : IDisposable
         public int Page { get; set; }
     }
 
+    public async Task<List<TogglTimeEntry>> GetAllEntriesAsync()
+    {
+        return await GetDetailedReportAsync(new DateTime(2000, 1, 1), DateTime.Today);
+    }
+
     public void Dispose() => _httpClient.Dispose();
 }

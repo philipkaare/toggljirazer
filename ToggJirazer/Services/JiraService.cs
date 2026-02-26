@@ -65,7 +65,7 @@ public class JiraService : IDisposable
     {
         await ResolveFieldIdsAsync();
 
-        var fieldsParam = "summary,issuetype";
+        var fieldsParam = "summary,issuetype,fixVersions,timeoriginalestimate";
         if (_budgetFieldId != null) fieldsParam += $",{_budgetFieldId}";
         if (_accountFieldId != null) fieldsParam += $",{_accountFieldId}";
 
@@ -121,7 +121,12 @@ public class JiraService : IDisposable
             IssueType = issue.Fields?.Issuetype?.Name ?? string.Empty,
             Summary = issue.Fields?.Summary ?? string.Empty,
             Budget = budgetValue,
-            Account = accountValue
+            Account = accountValue,
+            FixVersions = issue.Fields?.FixVersions?.Select(v => v.Name ?? string.Empty)
+                              .Where(n => !string.IsNullOrEmpty(n)).ToList() ?? new(),
+            Estimate = issue.Fields?.TimeOriginalEstimate.HasValue == true
+                ? issue.Fields.TimeOriginalEstimate.Value / 3600.0
+                : null
         };
     }
 
@@ -157,8 +162,19 @@ public class JiraService : IDisposable
         public string? Summary { get; set; }
         public JiraIssueType? Issuetype { get; set; }
 
+        [System.Text.Json.Serialization.JsonPropertyName("fixVersions")]
+        public List<JiraVersionRef>? FixVersions { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("timeoriginalestimate")]
+        public long? TimeOriginalEstimate { get; set; }
+
         [System.Text.Json.Serialization.JsonExtensionData]
         public Dictionary<string, object?>? CustomFields { get; set; }
+    }
+
+    private sealed class JiraVersionRef
+    {
+        public string? Name { get; set; }
     }
 
     private sealed class JiraIssueType
@@ -170,6 +186,72 @@ public class JiraService : IDisposable
     {
         public string? Id { get; set; }
         public string? Name { get; set; }
+    }
+
+    private sealed class JiraSearchResponse
+    {
+        public int Total { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("issues")]
+        public List<JiraIssueResponse>? Issues { get; set; }
+    }
+
+    public async Task<List<JiraIssue>> GetIssuesByFixVersionAsync(string version)
+    {
+        var results = new List<JiraIssue>();
+        int startAt = 0;
+        const int maxResults = 100;
+        int total;
+
+        do
+        {
+            var jql = Uri.EscapeDataString($"fixVersion = \"{version}\"");
+            var url = $"rest/api/3/search?jql={jql}&fields=summary,issuetype,timeoriginalestimate&startAt={startAt}&maxResults={maxResults}";
+
+            HttpResponseMessage response;
+            try
+            {
+                response = await _httpClient.GetAsync(url);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(
+                    $"Failed to connect to Jira API: {ex.Message}. " +
+                    "Please check 'Jira:BaseUrl' in appsettings.json and your network connection.", ex);
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                throw new InvalidOperationException(
+                    $"Jira API returned {(int)response.StatusCode} when searching for fixVersion '{version}': {error}");
+            }
+
+            var json = await response.Content.ReadAsStringAsync();
+            var searchResult = JsonSerializer.Deserialize<JiraSearchResponse>(json, JsonOptions);
+            if (searchResult?.Issues == null) break;
+
+            total = searchResult.Total;
+
+            foreach (var issue in searchResult.Issues)
+            {
+                if (issue.Key == null) continue;
+                results.Add(new JiraIssue
+                {
+                    Key = issue.Key,
+                    IssueType = issue.Fields?.Issuetype?.Name ?? string.Empty,
+                    Summary = issue.Fields?.Summary ?? string.Empty,
+                    Estimate = issue.Fields?.TimeOriginalEstimate.HasValue == true
+                        ? issue.Fields.TimeOriginalEstimate.Value / 3600.0
+                        : null
+                });
+            }
+
+            startAt += searchResult.Issues.Count;
+        }
+        while (startAt < total);
+
+        return results;
     }
 
     public void Dispose() => _httpClient.Dispose();

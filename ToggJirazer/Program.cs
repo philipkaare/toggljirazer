@@ -109,20 +109,26 @@ try
 
     Console.WriteLine();
 
+    // Fetch all-time Toggl entries for the version report totals
+    Console.WriteLine("Fetching all-time Toggl entries for version totals...");
+    var allEntries = await togglService.GetAllEntriesAsync();
+    Console.WriteLine();
+
     // Build report
     using var jiraService = new JiraService(appConfig.Jira);
     var reportService = new ReportService(jiraService);
-    var rows = await reportService.BuildReportAsync(entries);
+    var (rows, versionRows) = await reportService.BuildReportAsync(entries, allEntries);
 
     Console.WriteLine();
     Console.WriteLine($"Report contains {rows.Count} rows.");
+    Console.WriteLine($"Version report contains {versionRows.Count} rows.");
     Console.WriteLine();
 
     // Write report in configured format
     var format = appConfig.Report.Format?.Trim().ToLowerInvariant();
     if (format == "xlsx")
     {
-        reportService.WriteXlsx(rows, appConfig.Report.OutputFile);
+        reportService.WriteXlsx(rows, versionRows, appConfig.Report.OutputFile);
     }
     else
     {
@@ -131,6 +137,13 @@ try
             Console.Error.WriteLine($"Warning: Unrecognized format '{appConfig.Report.Format}'. Defaulting to CSV.");
         }
         reportService.WriteCsv(rows, appConfig.Report.OutputFile);
+
+        // Write version report to a second CSV file
+        var outputPath = appConfig.Report.OutputFile;
+        var versionOutputPath = Path.Combine(
+            Path.GetDirectoryName(outputPath) ?? string.Empty,
+            Path.GetFileNameWithoutExtension(outputPath) + "_versions" + Path.GetExtension(outputPath));
+        reportService.WriteVersionCsv(versionRows, versionOutputPath);
     }
 }
 catch (InvalidOperationException ex)
