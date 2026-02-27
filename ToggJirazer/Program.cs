@@ -6,6 +6,7 @@ using ToggJirazer.Services;
 var config = new ConfigurationBuilder()
     .SetBasePath(Directory.GetCurrentDirectory())
     .AddJsonFile("appsettings.json", optional: false, reloadOnChange: false)
+    .AddJsonFile("appsettings.development.json", optional: true, reloadOnChange: false)
     .Build();
 
 var appConfig = new AppConfig();
