@@ -150,6 +150,100 @@ public class JiraService : IDisposable
         return field?.ToString();
     }
 
+    public async Task<Dictionary<string, JiraIssue?>> GetIssuesBulkAsync(IEnumerable<string> issueKeys)
+    {
+        await ResolveFieldIdsAsync();
+
+        var fields = new List<string> { "summary", "issuetype", "fixVersions", "timeoriginalestimate" };
+        if (_budgetFieldId != null) fields.Add(_budgetFieldId);
+        if (_accountFieldId != null) fields.Add(_accountFieldId);
+
+        var result = new Dictionary<string, JiraIssue?>(StringComparer.OrdinalIgnoreCase);
+        var keyList = issueKeys.ToList();
+
+        const int batchSize = 100;
+        for (int i = 0; i < keyList.Count; i += batchSize)
+        {
+            var batch = keyList.Skip(i).Take(batchSize).ToList();
+            var requestBody = new JiraBulkFetchRequest { IssueIdsOrKeys = batch, Fields = fields };
+            var json = JsonSerializer.Serialize(requestBody, JsonOptions);
+            var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+
+            HttpResponseMessage response;
+            try
+            {
+                response = await _httpClient.PostAsync("rest/api/3/issue/bulkfetch", content);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(
+                    $"Failed to connect to Jira API: {ex.Message}. " +
+                    "Please check 'Jira:BaseUrl' in appsettings.json and your network connection.", ex);
+            }
+
+            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized ||
+                response.StatusCode == System.Net.HttpStatusCode.Forbidden)
+            {
+                throw new InvalidOperationException(
+                    "Jira authentication failed. Please verify 'Jira:UserEmail' and 'Jira:ApiToken' " +
+                    "in appsettings.json are correct.");
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var error = await response.Content.ReadAsStringAsync();
+                throw new InvalidOperationException(
+                    $"Jira API returned {(int)response.StatusCode} for bulk fetch: {error}");
+            }
+
+            var responseJson = await response.Content.ReadAsStringAsync();
+            var bulkResponse = JsonSerializer.Deserialize<JiraBulkFetchResponse>(responseJson, JsonOptions);
+
+            if (bulkResponse?.Issues != null)
+            {
+                foreach (var issue in bulkResponse.Issues)
+                {
+                    if (issue.Key == null) continue;
+
+                    var budgetValue = _budgetFieldId != null
+                        ? ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(_budgetFieldId))
+                        : null;
+                    var accountValue = _accountFieldId != null
+                        ? ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(_accountFieldId))
+                        : null;
+
+                    result[issue.Key] = new JiraIssue
+                    {
+                        Key = issue.Key,
+                        IssueType = issue.Fields?.Issuetype?.Name ?? string.Empty,
+                        Summary = issue.Fields?.Summary ?? string.Empty,
+                        Budget = budgetValue,
+                        Account = accountValue,
+                        FixVersions = issue.Fields?.FixVersions?.Select(v => v.Name ?? string.Empty)
+                                          .Where(n => !string.IsNullOrEmpty(n)).ToList() ?? new(),
+                        Estimate = issue.Fields?.TimeOriginalEstimate.HasValue == true
+                            ? issue.Fields.TimeOriginalEstimate.Value / 3600.0
+                            : null
+                    };
+                }
+            }
+
+            if (bulkResponse?.Errors != null)
+            {
+                foreach (var err in bulkResponse.Errors)
+                {
+                    if (err.IssueKey != null)
+                    {
+                        Console.WriteLine($"  Warning: Jira issue '{err.IssueKey}' could not be fetched (status {err.Status}).");
+                        result[err.IssueKey] = null;
+                    }
+                }
+            }
+        }
+
+        return result;
+    }
+
     // Internal response models
     private sealed class JiraIssueResponse
     {
@@ -194,6 +288,33 @@ public class JiraService : IDisposable
 
         [System.Text.Json.Serialization.JsonPropertyName("issues")]
         public List<JiraIssueResponse>? Issues { get; set; }
+    }
+
+    private sealed class JiraBulkFetchRequest
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("issueIdsOrKeys")]
+        public List<string> IssueIdsOrKeys { get; set; } = new();
+
+        [System.Text.Json.Serialization.JsonPropertyName("fields")]
+        public List<string> Fields { get; set; } = new();
+    }
+
+    private sealed class JiraBulkFetchResponse
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("issues")]
+        public List<JiraIssueResponse>? Issues { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("errors")]
+        public List<JiraBulkFetchError>? Errors { get; set; }
+    }
+
+    private sealed class JiraBulkFetchError
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("issueKey")]
+        public string? IssueKey { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("status")]
+        public int Status { get; set; }
     }
 
     public async Task<List<JiraIssue>> GetIssuesByFixVersionAsync(string version)
