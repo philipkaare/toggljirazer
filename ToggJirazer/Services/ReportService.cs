@@ -176,6 +176,8 @@ public class ReportService
     /// <summary>
     /// Writes the report rows to an Excel (.xlsx) file at the specified path,
     /// with a second sheet containing the version summary report.
+    /// Sheets are formatted as tables with headers, numeric columns use Danish
+    /// decimal format, and sums are appended at the bottom of numeric columns.
     /// </summary>
     public void WriteXlsx(List<ReportRow> rows, List<VersionReportRow> versionRows, string outputPath)
     {
@@ -205,8 +207,23 @@ public class ReportService
             worksheet.Cell(r + 2, 6).Value = row.Person;
             worksheet.Cell(r + 2, 7).Value = row.StartDate;
             worksheet.Cell(r + 2, 8).Value = row.TimeUsedHHMM;
-            worksheet.Cell(r + 2, 9).Value = row.TimeUsedDecimal;
+            // Store as actual number so Excel displays using locale decimal separator (Danish: comma)
+            if (double.TryParse(row.TimeUsedDecimal, NumberStyles.Any, CultureInfo.InvariantCulture, out var decimalHours))
+                worksheet.Cell(r + 2, 9).Value = decimalHours;
+            else
+                worksheet.Cell(r + 2, 9).Value = row.TimeUsedDecimal;
         }
+
+        // Format as Excel table and add a totals row with SUM for the decimal hours column
+        if (rows.Count > 0)
+        {
+            var table = worksheet.Range(1, 1, rows.Count + 1, headers.Length).CreateTable();
+            table.ShowTotalsRow = true;
+            table.Field("Time Used (Decimal)").TotalsRowFunction = XLTotalsRowFunction.Sum;
+        }
+
+        // Apply Danish-compatible number format (2 decimal places) to the decimal hours column
+        worksheet.Column(9).Style.NumberFormat.Format = "0.00";
 
         // Second sheet: version report
         var versionSheet = workbook.Worksheets.Add("Version Report");
@@ -229,6 +246,21 @@ public class ReportService
             versionSheet.Cell(r + 2, 4).Value = row.TotalWorkedHours;
             versionSheet.Cell(r + 2, 5).Value = row.Difference;
         }
+
+        // Format version sheet as Excel table with SUM totals for all numeric columns
+        if (versionRows.Count > 0)
+        {
+            var versionTable = versionSheet.Range(1, 1, versionRows.Count + 1, versionHeaders.Length).CreateTable();
+            versionTable.ShowTotalsRow = true;
+            versionTable.Field("Total Estimate Sum").TotalsRowFunction = XLTotalsRowFunction.Sum;
+            versionTable.Field("Worked Hours in Period").TotalsRowFunction = XLTotalsRowFunction.Sum;
+            versionTable.Field("Total Worked Hours").TotalsRowFunction = XLTotalsRowFunction.Sum;
+            versionTable.Field("Difference").TotalsRowFunction = XLTotalsRowFunction.Sum;
+        }
+
+        // Apply Danish-compatible number format (2 decimal places) to numeric columns on version sheet
+        for (int col = 2; col <= 5; col++)
+            versionSheet.Column(col).Style.NumberFormat.Format = "0.00";
 
         workbook.SaveAs(outputPath);
         Console.WriteLine($"Report written to: {Path.GetFullPath(outputPath)}");
