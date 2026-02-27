@@ -300,7 +300,12 @@ public class JiraService : IDisposable
 
         [System.Text.Json.Serialization.JsonPropertyName("issues")]
         public List<JiraIssueResponse>? Issues { get; set; }
-    }
+        [System.Text.Json.Serialization.JsonPropertyName("nextPageToken")]
+        public string? NextPageToken { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("isLast")]
+        public bool IsLast { get; set; }
+    
+  }
 
     private sealed class JiraBulkFetchRequest
     {
@@ -337,8 +342,8 @@ public class JiraService : IDisposable
         [System.Text.Json.Serialization.JsonPropertyName("fields")]
         public List<string> Fields { get; set; } = new();
 
-        [System.Text.Json.Serialization.JsonPropertyName("startAt")]
-        public int StartAt { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("nextPageToken")]
+        public string? NextPageToken { get; set; }
 
         [System.Text.Json.Serialization.JsonPropertyName("maxResults")]
         public int MaxResults { get; set; }
@@ -347,9 +352,9 @@ public class JiraService : IDisposable
     public async Task<List<JiraIssue>> GetIssuesByFixVersionAsync(string version)
     {
         var results = new List<JiraIssue>();
-        int startAt = 0;
+        string? nextPageToken = null;
+        bool isLastPage = false;
         const int maxResults = 100;
-        int total;
 
         do
         {
@@ -357,7 +362,7 @@ public class JiraService : IDisposable
             {
                 Jql = $"fixVersion = \"{version}\"",
                 Fields = new List<string> { "summary", "issuetype", "timeoriginalestimate" },
-                StartAt = startAt,
+                NextPageToken = nextPageToken,
                 MaxResults = maxResults
             };
             var requestJson = JsonSerializer.Serialize(requestBody, JsonOptions);
@@ -385,9 +390,9 @@ public class JiraService : IDisposable
             var json = await response.Content.ReadAsStringAsync();
             var searchResult = JsonSerializer.Deserialize<JiraSearchResponse>(json, JsonOptions);
             if (searchResult?.Issues == null) break;
-
-            total = searchResult.Total;
-
+            isLastPage = searchResult.IsLast;
+            nextPageToken = searchResult.NextPageToken;
+      
             foreach (var issue in searchResult.Issues)
             {
                 if (issue.Key == null) continue;
@@ -402,9 +407,8 @@ public class JiraService : IDisposable
                 });
             }
 
-            startAt += searchResult.Issues.Count;
         }
-        while (startAt < total);
+        while (!isLastPage);
 
         return results;
     }
