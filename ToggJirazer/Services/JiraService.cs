@@ -159,7 +159,11 @@ public class JiraService : IDisposable
         if (_accountFieldId != null) fields.Add(_accountFieldId);
 
         var result = new Dictionary<string, JiraIssue?>(StringComparer.OrdinalIgnoreCase);
+        var errorStatus = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var keyList = issueKeys.ToList();
+        int fetched = 0;
+
+        PrintProgressBar(fetched, keyList.Count);
 
         const int batchSize = 100;
         for (int i = 0; i < keyList.Count; i += batchSize)
@@ -234,12 +238,20 @@ public class JiraService : IDisposable
                 {
                     if (err.IssueKey != null)
                     {
-                        Console.WriteLine($"  Warning: Jira issue '{err.IssueKey}' could not be fetched (status {err.Status}).");
                         result[err.IssueKey] = null;
+                        errorStatus[err.IssueKey] = err.Status;
                     }
                 }
             }
+
+            fetched += batch.Count;
+            PrintProgressBar(fetched, keyList.Count);
         }
+
+        Console.WriteLine();
+
+        foreach (var kv in errorStatus)
+            Console.WriteLine($"  Warning: Jira issue '{kv.Key}' could not be fetched (status {kv.Value}).");
 
         return result;
     }
@@ -373,6 +385,14 @@ public class JiraService : IDisposable
         while (startAt < total);
 
         return results;
+    }
+
+    private static void PrintProgressBar(int current, int total)
+    {
+        const int barWidth = 30;
+        int filled = total > 0 ? (int)((double)current / total * barWidth) : barWidth;
+        var bar = new string('█', filled) + new string('░', barWidth - filled);
+        Console.Write($"\r  Fetching Jira issues: [{bar}] {current}/{total}");
     }
 
     public void Dispose() => _httpClient.Dispose();
