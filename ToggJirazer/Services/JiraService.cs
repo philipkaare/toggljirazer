@@ -329,6 +329,21 @@ public class JiraService : IDisposable
         public int Status { get; set; }
     }
 
+    private sealed class JiraSearchRequest
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("jql")]
+        public string Jql { get; set; } = string.Empty;
+
+        [System.Text.Json.Serialization.JsonPropertyName("fields")]
+        public List<string> Fields { get; set; } = new();
+
+        [System.Text.Json.Serialization.JsonPropertyName("startAt")]
+        public int StartAt { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("maxResults")]
+        public int MaxResults { get; set; }
+    }
+
     public async Task<List<JiraIssue>> GetIssuesByFixVersionAsync(string version)
     {
         var results = new List<JiraIssue>();
@@ -338,13 +353,20 @@ public class JiraService : IDisposable
 
         do
         {
-            var jql = Uri.EscapeDataString($"fixVersion = \"{version}\"");
-            var url = $"rest/api/3/search?jql={jql}&fields=summary,issuetype,timeoriginalestimate&startAt={startAt}&maxResults={maxResults}";
+            var requestBody = new JiraSearchRequest
+            {
+                Jql = $"fixVersion = \"{version}\"",
+                Fields = new List<string> { "summary", "issuetype", "timeoriginalestimate" },
+                StartAt = startAt,
+                MaxResults = maxResults
+            };
+            var requestJson = JsonSerializer.Serialize(requestBody, JsonOptions);
+            var content = new StringContent(requestJson, System.Text.Encoding.UTF8, "application/json");
 
             HttpResponseMessage response;
             try
             {
-                response = await _httpClient.GetAsync(url);
+                response = await _httpClient.PostAsync("rest/api/3/search/jql", content);
             }
             catch (Exception ex)
             {
