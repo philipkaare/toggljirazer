@@ -29,13 +29,8 @@ public class ReportService
 
         Console.WriteLine($"Found {allKeys.Count} unique Jira issue keys to look up.");
 
-        // Fetch JIRA issues (with caching)
-        var jiraIssues = new Dictionary<string, JiraIssue?>(StringComparer.OrdinalIgnoreCase);
-        foreach (var key in allKeys)
-        {
-            Console.WriteLine($"  Looking up Jira issue: {key}");
-            jiraIssues[key] = await _jiraService.GetIssueAsync(key);
-        }
+        // Fetch JIRA issues in bulk to avoid rate limiting
+        var jiraIssues = await _jiraService.GetIssuesBulkAsync(allKeys);
 
         // Build main report rows (grouped by JIRA key and user, using period entries)
         var groups = periodEntries
