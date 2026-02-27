@@ -15,25 +15,33 @@ public class ReportService
         _jiraService = jiraService;
     }
 
-    public async Task<List<ReportRow>> BuildReportAsync(List<TogglTimeEntry> entries)
+    public async Task<(List<ReportRow> Rows, List<VersionReportRow> VersionRows)> BuildReportAsync(
+        List<TogglTimeEntry> periodEntries,
+        List<TogglTimeEntry> allEntries)
     {
-        // Group entries by JIRA key (extracted from description) and user
-        var groups = entries
-            .Select(e => new { Entry = e, Key = ExtractJiraKey(e.Description) })
-            .Where(x => !string.IsNullOrEmpty(x.Key))
-            .GroupBy(x => new { x.Key, x.Entry.User, x.Entry.Email });
+        // Collect all unique JIRA keys from both entry sets
+        var allKeys = periodEntries.Concat(allEntries)
+            .Select(e => ExtractJiraKey(e.Description))
+            .Where(k => !string.IsNullOrEmpty(k))
+            .Select(k => k!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
-        // Collect all unique JIRA keys to look up
-        var jiraKeys = groups.Select(g => g.Key.Key!).Distinct().ToList();
-        Console.WriteLine($"Found {jiraKeys.Count} unique Jira issue keys to look up.");
+        Console.WriteLine($"Found {allKeys.Count} unique Jira issue keys to look up.");
 
         // Fetch JIRA issues (with caching)
         var jiraIssues = new Dictionary<string, JiraIssue?>(StringComparer.OrdinalIgnoreCase);
-        foreach (var key in jiraKeys)
+        foreach (var key in allKeys)
         {
             Console.WriteLine($"  Looking up Jira issue: {key}");
             jiraIssues[key] = await _jiraService.GetIssueAsync(key);
         }
+
+        // Build main report rows (grouped by JIRA key and user, using period entries)
+        var groups = periodEntries
+            .Select(e => new { Entry = e, Key = ExtractJiraKey(e.Description) })
+            .Where(x => !string.IsNullOrEmpty(x.Key))
+            .GroupBy(x => new { x.Key, x.Entry.User, x.Entry.Email });
 
         var rows = new List<ReportRow>();
         foreach (var group in groups)
@@ -41,12 +49,10 @@ public class ReportService
             var jiraKey = group.Key.Key!;
             var issue = jiraIssues.TryGetValue(jiraKey, out var ji) ? ji : null;
 
-            // Total duration in milliseconds
             var totalMs = group.Sum(x => x.Entry.Duration);
             var totalSeconds = totalMs / 1000;
             var timeSpan = TimeSpan.FromSeconds(totalSeconds);
 
-            // Earliest start date in the group
             var startDate = group.Min(x => x.Entry.Start).ToString("yyyy-MM-dd");
 
             rows.Add(new ReportRow
@@ -63,14 +69,89 @@ public class ReportService
             });
         }
 
-        // Sort by Key then Person
         rows.Sort((a, b) =>
         {
             int cmp = string.Compare(a.Key, b.Key, StringComparison.OrdinalIgnoreCase);
             return cmp != 0 ? cmp : string.Compare(a.Person, b.Person, StringComparison.OrdinalIgnoreCase);
         });
 
-        return rows;
+        // Build version report rows
+        var versionRows = await BuildVersionRowsAsync(periodEntries, allEntries, jiraIssues);
+
+        return (rows, versionRows);
+    }
+
+    private async Task<List<VersionReportRow>> BuildVersionRowsAsync(
+        List<TogglTimeEntry> periodEntries,
+        List<TogglTimeEntry> allEntries,
+        Dictionary<string, JiraIssue?> jiraIssues)
+    {
+        // Collect fix versions referenced by jira issues linked from toggl
+        var fixVersionSet = jiraIssues.Values
+            .Where(i => i != null)
+            .SelectMany(i => i!.FixVersions)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(v => v)
+            .ToList();
+
+        if (fixVersionSet.Count == 0)
+            return new List<VersionReportRow>();
+
+        // Build a lookup: jira key -> fix versions (from period-linked issues)
+        var keyToVersions = jiraIssues
+            .Where(kv => kv.Value != null && kv.Value.FixVersions.Count > 0)
+            .ToDictionary(kv => kv.Key, kv => kv.Value!.FixVersions, StringComparer.OrdinalIgnoreCase);
+
+        // Sum period hours per fix version
+        var periodHoursByVersion = SumHoursByVersion(periodEntries, keyToVersions);
+
+        // Sum all-time hours per fix version
+        var totalHoursByVersion = SumHoursByVersion(allEntries, keyToVersions);
+
+        Console.WriteLine($"Building version report for {fixVersionSet.Count} fix version(s).");
+
+        var versionRows = new List<VersionReportRow>();
+        foreach (var version in fixVersionSet)
+        {
+            Console.WriteLine($"  Fetching Jira issues for fix version: {version}");
+            var versionIssues = await _jiraService.GetIssuesByFixVersionAsync(version);
+            var estimateSum = versionIssues.Sum(i => i.Estimate ?? 0.0);
+
+            periodHoursByVersion.TryGetValue(version, out var periodHours);
+            totalHoursByVersion.TryGetValue(version, out var totalHours);
+            var difference = estimateSum - totalHours;
+
+            versionRows.Add(new VersionReportRow
+            {
+                Version = version,
+                TotalEstimateSum = Math.Round(estimateSum, 2),
+                WorkedHoursInPeriod = Math.Round(periodHours, 2),
+                TotalWorkedHours = Math.Round(totalHours, 2),
+                Difference = Math.Round(difference, 2)
+            });
+        }
+
+        return versionRows;
+    }
+
+    private static Dictionary<string, double> SumHoursByVersion(
+        List<TogglTimeEntry> entries,
+        Dictionary<string, List<string>> keyToVersions)
+    {
+        var result = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in entries)
+        {
+            var key = ExtractJiraKey(entry.Description);
+            if (key == null) continue;
+            if (!keyToVersions.TryGetValue(key, out var versions)) continue;
+            var hours = entry.Duration / 1000.0 / 3600.0;
+            foreach (var version in versions)
+            {
+                result.TryGetValue(version, out var existing);
+                result[version] = existing + hours;
+            }
+        }
+        return result;
     }
 
     public void WriteCsv(List<ReportRow> rows, string outputPath)
@@ -85,10 +166,23 @@ public class ReportService
         Console.WriteLine($"Report written to: {Path.GetFullPath(outputPath)}");
     }
 
+    public void WriteVersionCsv(List<VersionReportRow> versionRows, string outputPath)
+    {
+        using var writer = new StreamWriter(outputPath, false, System.Text.Encoding.UTF8);
+        var config = new CsvConfiguration(CultureInfo.InvariantCulture)
+        {
+            HasHeaderRecord = true
+        };
+        using var csv = new CsvWriter(writer, config);
+        csv.WriteRecords(versionRows);
+        Console.WriteLine($"Version report written to: {Path.GetFullPath(outputPath)}");
+    }
+
     /// <summary>
-    /// Writes the report rows to an Excel (.xlsx) file at the specified path.
+    /// Writes the report rows to an Excel (.xlsx) file at the specified path,
+    /// with a second sheet containing the version summary report.
     /// </summary>
-    public void WriteXlsx(List<ReportRow> rows, string outputPath)
+    public void WriteXlsx(List<ReportRow> rows, List<VersionReportRow> versionRows, string outputPath)
     {
         using var workbook = new XLWorkbook();
         var worksheet = workbook.Worksheets.Add("Report");
@@ -117,6 +211,28 @@ public class ReportService
             worksheet.Cell(r + 2, 7).Value = row.StartDate;
             worksheet.Cell(r + 2, 8).Value = row.TimeUsedHHMM;
             worksheet.Cell(r + 2, 9).Value = row.TimeUsedDecimal;
+        }
+
+        // Second sheet: version report
+        var versionSheet = workbook.Worksheets.Add("Version Report");
+        var versionHeaders = new[]
+        {
+            "Version", "Total Estimate Sum", "Worked Hours in Period",
+            "Total Worked Hours", "Difference"
+        };
+        for (int i = 0; i < versionHeaders.Length; i++)
+        {
+            versionSheet.Cell(1, i + 1).Value = versionHeaders[i];
+        }
+
+        for (int r = 0; r < versionRows.Count; r++)
+        {
+            var row = versionRows[r];
+            versionSheet.Cell(r + 2, 1).Value = row.Version;
+            versionSheet.Cell(r + 2, 2).Value = row.TotalEstimateSum;
+            versionSheet.Cell(r + 2, 3).Value = row.WorkedHoursInPeriod;
+            versionSheet.Cell(r + 2, 4).Value = row.TotalWorkedHours;
+            versionSheet.Cell(r + 2, 5).Value = row.Difference;
         }
 
         workbook.SaveAs(outputPath);
