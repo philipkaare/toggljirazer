@@ -15,7 +15,7 @@ public class ReportService
         _jiraService = jiraService;
     }
 
-    public async Task<(List<ReportRow> Rows, List<VersionReportRow> VersionRows)> BuildReportAsync(
+    public async Task<(List<(string SheetName, List<ReportRow> Rows)> ReportSheets, List<VersionReportRow> VersionRows)> BuildReportAsync(
         List<TogglTimeEntry> periodEntries,
         List<TogglTimeEntry> allEntries)
     {
@@ -32,8 +32,40 @@ public class ReportService
         // Fetch JIRA issues in bulk to avoid rate limiting
         var jiraIssues = await _jiraService.GetIssuesBulkAsync(allKeys);
 
-        // Build main report rows (grouped by JIRA key and user, using period entries)
-        var groups = periodEntries
+        // Group period entries by year-month to detect multi-month periods
+        var byMonth = periodEntries
+            .GroupBy(e => new { e.Start.Year, e.Start.Month })
+            .OrderBy(g => g.Key.Year).ThenBy(g => g.Key.Month)
+            .ToList();
+
+        List<(string SheetName, List<ReportRow> Rows)> reportSheets;
+        if (byMonth.Count <= 1)
+        {
+            // Single month (or no entries) — use a single "Report" sheet
+            reportSheets = [("Report", BuildRowsFromEntries(periodEntries, jiraIssues))];
+        }
+        else
+        {
+            // Multiple months — create one sheet per month
+            reportSheets = byMonth
+                .Select(g => (
+                    new DateTime(g.Key.Year, g.Key.Month, 1).ToString("MMMM yyyy"),
+                    BuildRowsFromEntries(g.ToList(), jiraIssues)
+                ))
+                .ToList();
+        }
+
+        // Build version report rows
+        var versionRows = await BuildVersionRowsAsync(periodEntries, allEntries, jiraIssues);
+
+        return (reportSheets, versionRows);
+    }
+
+    private static List<ReportRow> BuildRowsFromEntries(
+        List<TogglTimeEntry> entries,
+        Dictionary<string, JiraIssue?> jiraIssues)
+    {
+        var groups = entries
             .Select(e => new { Entry = e, Key = ExtractJiraKey(e.Description) })
             .Where(x => !string.IsNullOrEmpty(x.Key))
             .GroupBy(x => new { x.Key, x.Entry.User, x.Entry.Email });
@@ -70,10 +102,7 @@ public class ReportService
             return cmp != 0 ? cmp : string.Compare(a.Person, b.Person, StringComparison.OrdinalIgnoreCase);
         });
 
-        // Build version report rows
-        var versionRows = await BuildVersionRowsAsync(periodEntries, allEntries, jiraIssues);
-
-        return (rows, versionRows);
+        return rows;
     }
 
     private async Task<List<VersionReportRow>> BuildVersionRowsAsync(
@@ -174,16 +203,66 @@ public class ReportService
     }
 
     /// <summary>
-    /// Writes the report rows to an Excel (.xlsx) file at the specified path,
-    /// with a second sheet containing the version summary report.
-    /// Sheets are formatted as tables with headers; numeric columns use a fixed
-    /// two-decimal numeric format ("0.00"), and Excel displays the decimal separator
+    /// Writes the report rows to an Excel (.xlsx) file at the specified path.
+    /// When <paramref name="reportSheets"/> contains more than one entry (multi-month period),
+    /// each entry is written to its own named worksheet. A final "Version Report" sheet is
+    /// always appended. Sheets are formatted as tables with headers; numeric columns use a
+    /// fixed two-decimal numeric format ("0.00"), and Excel displays the decimal separator
     /// according to the user's locale. Sums are appended at the bottom of numeric columns.
     /// </summary>
-    public void WriteXlsx(List<ReportRow> rows, List<VersionReportRow> versionRows, string outputPath)
+    public void WriteXlsx(List<(string SheetName, List<ReportRow> Rows)> reportSheets, List<VersionReportRow> versionRows, string outputPath)
     {
         using var workbook = new XLWorkbook();
-        var worksheet = workbook.Worksheets.Add("Report");
+
+        foreach (var (sheetName, rows) in reportSheets)
+        {
+            WriteReportSheet(workbook, sheetName, rows);
+        }
+
+        // Second sheet: version report
+        var versionSheet = workbook.Worksheets.Add("Version Report");
+        var versionHeaders = new[]
+        {
+            "Version", "Total Estimate Sum", "Worked Hours in Period",
+            "Total Worked Hours", "Difference"
+        };
+        for (int i = 0; i < versionHeaders.Length; i++)
+        {
+            versionSheet.Cell(1, i + 1).Value = versionHeaders[i];
+        }
+
+        for (int r = 0; r < versionRows.Count; r++)
+        {
+            var row = versionRows[r];
+            versionSheet.Cell(r + 2, 1).Value = row.Version;
+            versionSheet.Cell(r + 2, 2).Value = row.TotalEstimateSum;
+            versionSheet.Cell(r + 2, 3).Value = row.WorkedHoursInPeriod;
+            versionSheet.Cell(r + 2, 4).Value = row.TotalWorkedHours;
+            versionSheet.Cell(r + 2, 5).Value = row.Difference;
+        }
+
+        // Format version sheet as Excel table with SUM totals for all numeric columns
+        if (versionRows.Count > 0)
+        {
+            var versionTable = versionSheet.Range(1, 1, versionRows.Count + 1, versionHeaders.Length).CreateTable();
+            versionTable.ShowTotalsRow = true;
+            versionTable.Field("Total Estimate Sum").TotalsRowFunction = XLTotalsRowFunction.Sum;
+            versionTable.Field("Worked Hours in Period").TotalsRowFunction = XLTotalsRowFunction.Sum;
+            versionTable.Field("Total Worked Hours").TotalsRowFunction = XLTotalsRowFunction.Sum;
+            versionTable.Field("Difference").TotalsRowFunction = XLTotalsRowFunction.Sum;
+        }
+
+        // Apply number format with 2 decimal places to numeric columns on version sheet
+        for (int col = 2; col <= 5; col++)
+            versionSheet.Column(col).Style.NumberFormat.Format = "0.00";
+
+        workbook.SaveAs(outputPath);
+        Console.WriteLine($"Report written to: {Path.GetFullPath(outputPath)}");
+    }
+
+    private static void WriteReportSheet(XLWorkbook workbook, string sheetName, List<ReportRow> rows)
+    {
+        var worksheet = workbook.Worksheets.Add(sheetName);
 
         // Write header row
         var headers = new[]
@@ -225,46 +304,6 @@ public class ReportService
 
         // Apply locale-agnostic number format with 2 decimal places to the decimal hours column
         worksheet.Column(9).Style.NumberFormat.Format = "0.00";
-
-        // Second sheet: version report
-        var versionSheet = workbook.Worksheets.Add("Version Report");
-        var versionHeaders = new[]
-        {
-            "Version", "Total Estimate Sum", "Worked Hours in Period",
-            "Total Worked Hours", "Difference"
-        };
-        for (int i = 0; i < versionHeaders.Length; i++)
-        {
-            versionSheet.Cell(1, i + 1).Value = versionHeaders[i];
-        }
-
-        for (int r = 0; r < versionRows.Count; r++)
-        {
-            var row = versionRows[r];
-            versionSheet.Cell(r + 2, 1).Value = row.Version;
-            versionSheet.Cell(r + 2, 2).Value = row.TotalEstimateSum;
-            versionSheet.Cell(r + 2, 3).Value = row.WorkedHoursInPeriod;
-            versionSheet.Cell(r + 2, 4).Value = row.TotalWorkedHours;
-            versionSheet.Cell(r + 2, 5).Value = row.Difference;
-        }
-
-        // Format version sheet as Excel table with SUM totals for all numeric columns
-        if (versionRows.Count > 0)
-        {
-            var versionTable = versionSheet.Range(1, 1, versionRows.Count + 1, versionHeaders.Length).CreateTable();
-            versionTable.ShowTotalsRow = true;
-            versionTable.Field("Total Estimate Sum").TotalsRowFunction = XLTotalsRowFunction.Sum;
-            versionTable.Field("Worked Hours in Period").TotalsRowFunction = XLTotalsRowFunction.Sum;
-            versionTable.Field("Total Worked Hours").TotalsRowFunction = XLTotalsRowFunction.Sum;
-            versionTable.Field("Difference").TotalsRowFunction = XLTotalsRowFunction.Sum;
-        }
-
-        // Apply number format with 2 decimal places to numeric columns on version sheet
-        for (int col = 2; col <= 5; col++)
-            versionSheet.Column(col).Style.NumberFormat.Format = "0.00";
-
-        workbook.SaveAs(outputPath);
-        Console.WriteLine($"Report written to: {Path.GetFullPath(outputPath)}");
     }
 
     /// <summary>
