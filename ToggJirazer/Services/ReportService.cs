@@ -176,8 +176,9 @@ public class ReportService
     /// <summary>
     /// Writes the report rows to an Excel (.xlsx) file at the specified path,
     /// with a second sheet containing the version summary report.
-    /// Sheets are formatted as tables with headers, numeric columns use Danish
-    /// decimal format, and sums are appended at the bottom of numeric columns.
+    /// Sheets are formatted as tables with headers; numeric columns use a fixed
+    /// two-decimal numeric format ("0.00"), and Excel displays the decimal separator
+    /// according to the user's locale. Sums are appended at the bottom of numeric columns.
     /// </summary>
     public void WriteXlsx(List<ReportRow> rows, List<VersionReportRow> versionRows, string outputPath)
     {
@@ -207,8 +208,8 @@ public class ReportService
             worksheet.Cell(r + 2, 6).Value = row.Person;
             worksheet.Cell(r + 2, 7).Value = row.StartDate;
             worksheet.Cell(r + 2, 8).Value = row.TimeUsedHHMM;
-            // Store as actual number so Excel displays using locale decimal separator (Danish: comma)
-            if (double.TryParse(row.TimeUsedDecimal, NumberStyles.Any, CultureInfo.InvariantCulture, out var decimalHours))
+            // Store as an actual number so Excel displays the decimal separator according to the user's locale
+            if (double.TryParse(row.TimeUsedDecimal, NumberStyles.Float, CultureInfo.InvariantCulture, out var decimalHours))
                 worksheet.Cell(r + 2, 9).Value = decimalHours;
             else
                 worksheet.Cell(r + 2, 9).Value = row.TimeUsedDecimal;
@@ -222,7 +223,7 @@ public class ReportService
             table.Field("Time Used (Decimal)").TotalsRowFunction = XLTotalsRowFunction.Sum;
         }
 
-        // Apply Danish-compatible number format (2 decimal places) to the decimal hours column
+        // Apply locale-agnostic number format with 2 decimal places to the decimal hours column
         worksheet.Column(9).Style.NumberFormat.Format = "0.00";
 
         // Second sheet: version report
@@ -258,7 +259,7 @@ public class ReportService
             versionTable.Field("Difference").TotalsRowFunction = XLTotalsRowFunction.Sum;
         }
 
-        // Apply Danish-compatible number format (2 decimal places) to numeric columns on version sheet
+        // Apply number format with 2 decimal places to numeric columns on version sheet
         for (int col = 2; col <= 5; col++)
             versionSheet.Column(col).Style.NumberFormat.Format = "0.00";
 
