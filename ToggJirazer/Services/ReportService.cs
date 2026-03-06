@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.IO;
 using ClosedXML.Excel;
 using CsvHelper;
 using CsvHelper.Configuration;
@@ -8,11 +9,26 @@ namespace ToggJirazer.Services;
 
 public class ReportService
 {
+    private static readonly HashSet<string> StandardVersionColumns = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Version", "Total Estimate Sum", "Worked Hours in Period", "Total Worked Hours", "Difference"
+    };
+
     private readonly JiraService _jiraService;
 
     public ReportService(JiraService jiraService)
     {
         _jiraService = jiraService;
+    }
+
+    private static List<string> GetExtraColumnNames(Dictionary<string, Dictionary<string, string>>? extraColumns)
+    {
+        if (extraColumns == null || extraColumns.Count == 0)
+            return [];
+        return extraColumns.Values
+            .SelectMany(d => d.Keys)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     public async Task<(List<(string SheetName, List<ReportRow> Rows)> ReportSheets, List<VersionReportRow> VersionRows)> BuildReportAsync(
@@ -190,7 +206,100 @@ public class ReportService
         Console.WriteLine($"Report written to: {Path.GetFullPath(outputPath)}");
     }
 
-    public void WriteVersionCsv(List<VersionReportRow> versionRows, string outputPath)
+    /// <summary>
+    /// Reads any extra (non-standard) columns from an existing version report file so they can be
+    /// preserved when the report is regenerated. The file format is inferred from its extension
+    /// (.xlsx or .csv). Returns a dictionary mapping version name to a dictionary of extra column
+    /// name/value pairs. Returns an empty dictionary if the file does not exist or cannot be read.
+    /// </summary>
+    public Dictionary<string, Dictionary<string, string>> ReadVersionReportExtraColumns(string outputPath)
+    {
+        var result = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+
+        if (!File.Exists(outputPath))
+            return result;
+
+        var ext = Path.GetExtension(outputPath).ToLowerInvariant();
+
+        if (ext == ".xlsx")
+            ReadVersionExtraColumnsFromXlsx(outputPath, result);
+        else if (ext == ".csv")
+            ReadVersionExtraColumnsFromCsv(outputPath, result);
+
+        return result;
+    }
+
+    private static void ReadVersionExtraColumnsFromXlsx(string path, Dictionary<string, Dictionary<string, string>> result)
+    {
+        try
+        {
+            using var workbook = new XLWorkbook(path);
+            var sheet = workbook.Worksheets
+                .FirstOrDefault(ws => ws.Name.Equals("Version Report", StringComparison.OrdinalIgnoreCase));
+            if (sheet == null) return;
+
+            var lastCol = sheet.LastColumnUsed()?.ColumnNumber() ?? 0;
+            if (lastCol == 0) return;
+
+            var extraColIndices = new Dictionary<int, string>();
+            for (int col = 1; col <= lastCol; col++)
+            {
+                var header = sheet.Cell(1, col).GetString();
+                if (!string.IsNullOrWhiteSpace(header) && !StandardVersionColumns.Contains(header))
+                    extraColIndices[col] = header;
+            }
+
+            if (extraColIndices.Count == 0) return;
+
+            var lastRow = sheet.LastRowUsed()?.RowNumber() ?? 1;
+            for (int row = 2; row <= lastRow; row++)
+            {
+                var version = sheet.Cell(row, 1).GetString();
+                if (string.IsNullOrWhiteSpace(version)) continue;
+
+                var extras = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var (col, colName) in extraColIndices)
+                    extras[colName] = sheet.Cell(row, col).GetString();
+
+                result[version] = extras;
+            }
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"Warning: Could not read extra columns from '{path}': {ex.Message}"); }
+    }
+
+    private static void ReadVersionExtraColumnsFromCsv(string path, Dictionary<string, Dictionary<string, string>> result)
+    {
+        try
+        {
+            using var reader = new StreamReader(path, System.Text.Encoding.UTF8);
+            var config = new CsvConfiguration(CultureInfo.InvariantCulture) { HasHeaderRecord = true };
+            using var csv = new CsvReader(reader, config);
+
+            csv.Read();
+            csv.ReadHeader();
+
+            var extraHeaders = csv.HeaderRecord!
+                .Where(h => !StandardVersionColumns.Contains(h))
+                .ToList();
+
+            if (extraHeaders.Count == 0) return;
+
+            while (csv.Read())
+            {
+                var version = csv.GetField("Version") ?? string.Empty;
+                if (string.IsNullOrWhiteSpace(version)) continue;
+
+                var extras = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var header in extraHeaders)
+                    extras[header] = csv.GetField(header) ?? string.Empty;
+
+                result[version] = extras;
+            }
+        }
+        catch (Exception ex) { Console.Error.WriteLine($"Warning: Could not read extra columns from '{path}': {ex.Message}"); }
+    }
+
+    public void WriteVersionCsv(List<VersionReportRow> versionRows, string outputPath, Dictionary<string, Dictionary<string, string>>? extraColumns = null)
     {
         using var writer = new StreamWriter(outputPath, false, System.Text.Encoding.UTF8);
         var config = new CsvConfiguration(CultureInfo.InvariantCulture)
@@ -198,7 +307,42 @@ public class ReportService
             HasHeaderRecord = true
         };
         using var csv = new CsvWriter(writer, config);
-        csv.WriteRecords(versionRows);
+
+        var extraColumnNames = GetExtraColumnNames(extraColumns);
+
+        if (extraColumnNames.Count == 0)
+        {
+            csv.WriteRecords(versionRows);
+        }
+        else
+        {
+            // Write headers manually so extra columns follow the standard ones
+            csv.WriteField("Version");
+            csv.WriteField("Total Estimate Sum");
+            csv.WriteField("Worked Hours in Period");
+            csv.WriteField("Total Worked Hours");
+            csv.WriteField("Difference");
+            foreach (var colName in extraColumnNames)
+                csv.WriteField(colName);
+            csv.NextRecord();
+
+            foreach (var row in versionRows)
+            {
+                csv.WriteField(row.Version);
+                csv.WriteField(row.TotalEstimateSum);
+                csv.WriteField(row.WorkedHoursInPeriod);
+                csv.WriteField(row.TotalWorkedHours);
+                csv.WriteField(row.Difference);
+
+                Dictionary<string, string>? rowExtras = null;
+                var hasExtras = extraColumns != null && extraColumns.TryGetValue(row.Version, out rowExtras);
+                foreach (var colName in extraColumnNames)
+                    csv.WriteField(hasExtras && rowExtras != null && rowExtras.TryGetValue(colName, out var v) ? v : string.Empty);
+
+                csv.NextRecord();
+            }
+        }
+
         Console.WriteLine($"Version report written to: {Path.GetFullPath(outputPath)}");
     }
 
@@ -209,8 +353,10 @@ public class ReportService
     /// always appended. Sheets are formatted as tables with headers; numeric columns use a
     /// fixed two-decimal numeric format ("0.00"), and Excel displays the decimal separator
     /// according to the user's locale. Sums are appended at the bottom of numeric columns.
+    /// When <paramref name="extraColumns"/> is provided, any extra version-report columns are
+    /// appended after the standard columns and their values are merged by version name.
     /// </summary>
-    public void WriteXlsx(List<(string SheetName, List<ReportRow> Rows)> reportSheets, List<VersionReportRow> versionRows, string outputPath)
+    public void WriteXlsx(List<(string SheetName, List<ReportRow> Rows)> reportSheets, List<VersionReportRow> versionRows, string outputPath, Dictionary<string, Dictionary<string, string>>? extraColumns = null)
     {
         using var workbook = new XLWorkbook();
 
@@ -219,13 +365,13 @@ public class ReportService
             WriteReportSheet(workbook, sheetName, rows);
         }
 
-        // Second sheet: version report
+        var extraColumnNames = GetExtraColumnNames(extraColumns);
+
+        // Version Report sheet
         var versionSheet = workbook.Worksheets.Add("Version Report");
-        var versionHeaders = new[]
-        {
-            "Version", "Total Estimate Sum", "Worked Hours in Period",
-            "Total Worked Hours", "Difference"
-        };
+        var standardHeaders = new[] { "Version", "Total Estimate Sum", "Worked Hours in Period", "Total Worked Hours", "Difference" };
+        var versionHeaders = standardHeaders.Concat(extraColumnNames).ToArray();
+
         for (int i = 0; i < versionHeaders.Length; i++)
         {
             versionSheet.Cell(1, i + 1).Value = versionHeaders[i];
@@ -239,6 +385,16 @@ public class ReportService
             versionSheet.Cell(r + 2, 3).Value = row.WorkedHoursInPeriod;
             versionSheet.Cell(r + 2, 4).Value = row.TotalWorkedHours;
             versionSheet.Cell(r + 2, 5).Value = row.Difference;
+
+            if (extraColumnNames.Count > 0 && extraColumns != null)
+            {
+                var hasExtras = extraColumns.TryGetValue(row.Version, out var rowExtras);
+                for (int c = 0; c < extraColumnNames.Count; c++)
+                {
+                    var val = hasExtras && rowExtras!.TryGetValue(extraColumnNames[c], out var v) ? v : string.Empty;
+                    versionSheet.Cell(r + 2, 6 + c).Value = val;
+                }
+            }
         }
 
         // Format version sheet as Excel table with SUM totals for all numeric columns
