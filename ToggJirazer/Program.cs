@@ -118,10 +118,10 @@ try
     // Build report
     using var jiraService = new JiraService(appConfig.Jira);
     var reportService = new ReportService(jiraService);
-    var (rows, versionRows) = await reportService.BuildReportAsync(entries, allEntries);
+    var (reportSheets, versionRows) = await reportService.BuildReportAsync(entries, allEntries);
 
     Console.WriteLine();
-    Console.WriteLine($"Report contains {rows.Count} rows.");
+    Console.WriteLine($"Report contains {reportSheets.Sum(s => s.Rows.Count)} rows.");
     Console.WriteLine($"Version report contains {versionRows.Count} rows.");
     Console.WriteLine();
 
@@ -129,7 +129,7 @@ try
     var format = appConfig.Report.Format?.Trim().ToLowerInvariant();
     if (format == "xlsx")
     {
-        reportService.WriteXlsx(rows, versionRows, appConfig.Report.OutputFile);
+        reportService.WriteXlsx(reportSheets, versionRows, appConfig.Report.OutputFile);
     }
     else
     {
@@ -137,6 +137,7 @@ try
         {
             Console.Error.WriteLine($"Warning: Unrecognized format '{appConfig.Report.Format}'. Defaulting to CSV.");
         }
+        var rows = reportSheets.SelectMany(s => s.Rows).ToList();
         reportService.WriteCsv(rows, appConfig.Report.OutputFile);
 
         // Write version report to a second CSV file
