@@ -129,7 +129,8 @@ try
     var format = appConfig.Report.Format?.Trim().ToLowerInvariant();
     if (format == "xlsx")
     {
-        reportService.WriteXlsx(reportSheets, versionRows, appConfig.Report.OutputFile);
+        var extraColumns = reportService.ReadVersionReportExtraColumns(appConfig.Report.OutputFile);
+        reportService.WriteXlsx(reportSheets, versionRows, appConfig.Report.OutputFile, extraColumns);
     }
     else
     {
@@ -145,7 +146,8 @@ try
         var versionOutputPath = Path.Combine(
             Path.GetDirectoryName(outputPath) ?? string.Empty,
             Path.GetFileNameWithoutExtension(outputPath) + "_versions" + Path.GetExtension(outputPath));
-        reportService.WriteVersionCsv(versionRows, versionOutputPath);
+        var extraColumns = reportService.ReadVersionReportExtraColumns(versionOutputPath);
+        reportService.WriteVersionCsv(versionRows, versionOutputPath, extraColumns);
     }
 }
 catch (InvalidOperationException ex)
