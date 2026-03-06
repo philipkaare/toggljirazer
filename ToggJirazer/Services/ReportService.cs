@@ -49,7 +49,7 @@ public class ReportService
             // Multiple months — create one sheet per month
             reportSheets = byMonth
                 .Select(g => (
-                    new DateTime(g.Key.Year, g.Key.Month, 1).ToString("MMMM yyyy"),
+                    new DateTime(g.Key.Year, g.Key.Month, 1).ToString("MMMM yyyy", CultureInfo.InvariantCulture),
                     BuildRowsFromEntries(g.ToList(), jiraIssues)
                 ))
                 .ToList();
