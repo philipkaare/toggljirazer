@@ -9,11 +9,16 @@ namespace ToggJirazer.Services;
 
 public class ReportService
 {
-    private static readonly HashSet<string> StandardVersionColumns = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "Version", "Total Estimate Sum", "Worked Hours in Period", "Total Worked Hours", "Difference"
-    };
+    private static readonly string[] StandardVersionHeaders =
+    [
+        "Version",
+        "Total Estimate Sum",
+        "Worked Hours in Period",
+        "Total Worked Hours",
+        "Difference"
+    ];
 
+    private static readonly HashSet<string> StandardVersionColumns = new(StandardVersionHeaders, StringComparer.OrdinalIgnoreCase);
     private readonly JiraService _jiraService;
 
     public ReportService(JiraService jiraService)
@@ -28,6 +33,7 @@ public class ReportService
         return extraColumns.Values
             .SelectMany(d => d.Keys)
             .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(name => name, StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
 
@@ -225,6 +231,8 @@ public class ReportService
             ReadVersionExtraColumnsFromXlsx(outputPath, result);
         else if (ext == ".csv")
             ReadVersionExtraColumnsFromCsv(outputPath, result);
+        else
+            Console.Error.WriteLine($"Warning: Unrecognized report file extension '{ext}' for path '{outputPath}'. Extra columns will not be preserved.");
 
         return result;
     }
