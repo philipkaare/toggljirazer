@@ -1,3 +1,4 @@
+using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
@@ -418,7 +419,7 @@ public class JiraService : IDisposable
         const int barWidth = 30;
         int filled = total > 0 ? (int)((double)current / total * barWidth) : barWidth;
         var bar = new string('█', filled) + new string('░', barWidth - filled);
-        Console.Write($"\r  Fetching Jira issues: [{bar}] {current}/{total}");
+        Console.WriteLine($"  Fetching Jira issues: [{bar}] {current}/{total}");
     }
 
     public void Dispose() => _httpClient.Dispose();

@@ -1,0 +1,169 @@
+<Window x:Class="ToggJirazer.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="ToggJirazer" Height="720" Width="760"
+        MinHeight="600" MinWidth="640">
+
+    <Window.Resources>
+        <Style TargetType="Label">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="HorizontalAlignment" Value="Right"/>
+            <Setter Property="Padding" Value="0,0,4,0"/>
+        </Style>
+        <Style TargetType="TextBox">
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Height" Value="26"/>
+            <Setter Property="Margin" Value="0,3"/>
+        </Style>
+        <Style TargetType="PasswordBox">
+            <Setter Property="Height" Value="26"/>
+            <Setter Property="Margin" Value="0,3"/>
+        </Style>
+        <Style TargetType="ComboBox">
+            <Setter Property="Height" Value="26"/>
+            <Setter Property="Margin" Value="0,3"/>
+        </Style>
+        <Style TargetType="Button">
+            <Setter Property="Height" Value="28"/>
+            <Setter Property="Padding" Value="14,0"/>
+        </Style>
+    </Window.Resources>
+
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- Settings -->
+        <TabControl Grid.Row="0" Margin="0,0,0,10">
+
+            <!-- Toggl settings -->
+            <TabItem Header="Toggl">
+                <Grid Margin="10,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="160"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <Label Grid.Row="0" Grid.Column="0" Content="API Token:"/>
+                    <PasswordBox Grid.Row="0" Grid.Column="1" x:Name="TogglApiToken" PasswordChar="●"/>
+
+                    <Label Grid.Row="1" Grid.Column="0" Content="Organization ID:"/>
+                    <TextBox Grid.Row="1" Grid.Column="1" x:Name="TogglOrgId"/>
+
+                    <Label Grid.Row="2" Grid.Column="0" Content="Workspace ID:"/>
+                    <TextBox Grid.Row="2" Grid.Column="1" x:Name="TogglWorkspaceId"/>
+
+                    <Label Grid.Row="3" Grid.Column="0" Content="Project ID:"/>
+                    <TextBox Grid.Row="3" Grid.Column="1" x:Name="TogglProjectId"/>
+                </Grid>
+            </TabItem>
+
+            <!-- Jira settings -->
+            <TabItem Header="Jira">
+                <Grid Margin="10,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="160"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <Label Grid.Row="0" Grid.Column="0" Content="Base URL:"/>
+                    <TextBox Grid.Row="0" Grid.Column="1" x:Name="JiraBaseUrl"/>
+
+                    <Label Grid.Row="1" Grid.Column="0" Content="User Email:"/>
+                    <TextBox Grid.Row="1" Grid.Column="1" x:Name="JiraUserEmail"/>
+
+                    <Label Grid.Row="2" Grid.Column="0" Content="API Token:"/>
+                    <PasswordBox Grid.Row="2" Grid.Column="1" x:Name="JiraApiToken" PasswordChar="●"/>
+                </Grid>
+            </TabItem>
+
+            <!-- Report settings -->
+            <TabItem Header="Report">
+                <Grid Margin="10,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="160"/>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <Label Grid.Row="0" Grid.Column="0" Content="Start Date:"/>
+                    <TextBox Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="2" x:Name="ReportStartDate"
+                             ToolTip="Leave empty to use the current month (yyyy-MM-dd)"/>
+
+                    <Label Grid.Row="1" Grid.Column="0" Content="End Date:"/>
+                    <TextBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" x:Name="ReportEndDate"
+                             ToolTip="Leave empty to use the current month (yyyy-MM-dd)"/>
+
+                    <Label Grid.Row="2" Grid.Column="0" Content="Output File:"/>
+                    <TextBox Grid.Row="2" Grid.Column="1" x:Name="ReportOutputFile" Margin="0,3,4,3"/>
+                    <Button Grid.Row="2" Grid.Column="2" Content="Browse…" Click="BrowseOutputFile_Click"/>
+
+                    <Label Grid.Row="3" Grid.Column="0" Content="Format:"/>
+                    <ComboBox Grid.Row="3" Grid.Column="1" Grid.ColumnSpan="2" x:Name="ReportFormat">
+                        <ComboBoxItem Content="xlsx"/>
+                        <ComboBoxItem Content="csv"/>
+                    </ComboBox>
+                </Grid>
+            </TabItem>
+
+        </TabControl>
+
+        <!-- Buttons and progress bar -->
+        <Grid Grid.Row="1" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <Button Grid.Row="0" Grid.Column="0" x:Name="SaveButton"
+                    Content="Save Settings" Margin="0,0,8,0"
+                    Click="SaveSettings_Click"/>
+            <Button Grid.Row="0" Grid.Column="1" x:Name="RunButton"
+                    Content="Generate Report"
+                    Click="RunButton_Click"/>
+
+            <ProgressBar Grid.Row="1" Grid.ColumnSpan="3"
+                         x:Name="ProgressBar"
+                         Height="20" Margin="0,8,0,0"
+                         Minimum="0" Maximum="100" Value="0"/>
+        </Grid>
+
+        <!-- Log output -->
+        <TextBox Grid.Row="2" x:Name="LogTextBox"
+                 IsReadOnly="True"
+                 VerticalScrollBarVisibility="Auto"
+                 HorizontalScrollBarVisibility="Auto"
+                 TextWrapping="NoWrap"
+                 FontFamily="Consolas"
+                 FontSize="12"
+                 AcceptsReturn="True"
+                 Background="#1E1E1E"
+                 Foreground="#D4D4D4"
+                 BorderBrush="#444444"/>
+    </Grid>
+</Window>
