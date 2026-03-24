@@ -37,8 +37,8 @@ public partial class MainWindow : Window
         JiraUserEmail.Text = config.Jira.UserEmail;
         JiraApiToken.Password = config.Jira.ApiToken;
 
-        ReportStartDate.Text = config.Report.StartDate ?? string.Empty;
-        ReportEndDate.Text = config.Report.EndDate ?? string.Empty;
+        ReportStartDate.Text = config.Report.StartDate ?? new DateTime(DateTime.Today.Year, 1, 1).ToString("yyyy-MM-dd");
+        ReportEndDate.Text = config.Report.EndDate ?? DateTime.Today.ToString("yyyy-MM-dd");
         ReportOutputFile.Text = config.Report.OutputFile;
 
         foreach (var item in ReportFormat.Items.Cast<ComboBoxItem>())
@@ -229,9 +229,9 @@ public partial class MainWindow : Window
         else
         {
             var now = DateTime.Today;
-            startDate = new DateTime(now.Year, now.Month, 1);
-            endDate = startDate.AddMonths(1).AddDays(-1);
-            Console.WriteLine($"No period specified — defaulting to current month: {startDate:yyyy-MM-dd} to {endDate:yyyy-MM-dd}");
+            startDate = new DateTime(now.Year, 1, 1);
+            endDate = now;
+            Console.WriteLine($"No period specified — defaulting to Jan 1 to today: {startDate:yyyy-MM-dd} to {endDate:yyyy-MM-dd}");
         }
 
         Console.WriteLine($"Report period: {startDate:yyyy-MM-dd} to {endDate:yyyy-MM-dd}");
