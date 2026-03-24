@@ -7,6 +7,10 @@ public class ReportRow
     [Name("Issue Type")]
     public string IssueType { get; set; } = string.Empty;
 
+    /// <summary>Fix versions (Jira releases) for this issue. Not included in CSV output.</summary>
+    [Ignore]
+    public List<string> FixVersions { get; set; } = new();
+
     [Name("Key")]
     public string Key { get; set; } = string.Empty;
 

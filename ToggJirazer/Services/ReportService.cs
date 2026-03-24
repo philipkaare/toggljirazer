@@ -114,7 +114,8 @@ public class ReportService
                 Person = group.Key.User,
                 StartDate = startDate,
                 TimeUsedHHMM = $"{(int)timeSpan.TotalHours:D2}:{timeSpan.Minutes:D2}",
-                TimeUsedDecimal = Math.Round(timeSpan.TotalHours, 2).ToString("F2", CultureInfo.InvariantCulture)
+                TimeUsedDecimal = Math.Round(timeSpan.TotalHours, 2).ToString("F2", CultureInfo.InvariantCulture),
+                FixVersions = issue?.FixVersions ?? new List<string>()
             });
         }
 
@@ -420,8 +421,74 @@ public class ReportService
         for (int col = 2; col <= 5; col++)
             versionSheet.Column(col).Style.NumberFormat.Format = "0.00";
 
+        // Opsummering sheet
+        WriteOpsummeringSheet(workbook, reportSheets.SelectMany(s => s.Rows).ToList());
+
         workbook.SaveAs(outputPath);
         Console.WriteLine($"Report written to: {Path.GetFullPath(outputPath)}");
+    }
+
+    private static void WriteOpsummeringSheet(XLWorkbook workbook, List<ReportRow> allRows)
+    {
+        var ws = workbook.Worksheets.Add("Opsummering");
+
+        // Headers
+        ws.Cell(1, 2).Value = "Budget:";
+        ws.Cell(1, 3).Value = "Budget pr. måned:";
+        ws.Cell(1, 4).Value = "Forbrugt:";
+        ws.Cell(1, 5).Value = "Rest:";
+        ws.Cell(1, 6).Value = "Rest pr. måned:";
+
+        static bool IsSupport(ReportRow r) =>
+            r.IssueType.Equals("Support", StringComparison.OrdinalIgnoreCase);
+
+        static bool IsAdHoc(ReportRow r) =>
+            r.FixVersions.Any(v => v.Contains("ad hoc", StringComparison.OrdinalIgnoreCase));
+
+        static bool IsUdefrakommende(ReportRow r) =>
+            r.FixVersions.Any(v => v.StartsWith("udefrakommende", StringComparison.OrdinalIgnoreCase));
+
+        static bool IsTilskudsberegning(ReportRow r) =>
+            r.FixVersions.Any(v => v.Equals("Tilskudsberegning", StringComparison.OrdinalIgnoreCase));
+
+        static double SumRows(IEnumerable<ReportRow> rows) =>
+            rows.Sum(r => double.TryParse(r.TimeUsedDecimal, NumberStyles.Float, CultureInfo.InvariantCulture, out var h) ? h : 0);
+
+        var supportRows = allRows.Where(IsSupport).ToList();
+        var adhocRows = allRows.Where(IsAdHoc).ToList();
+        var udefraRows = allRows.Where(IsUdefrakommende).ToList();
+        var tilskudRows = allRows.Where(IsTilskudsberegning).ToList();
+
+        var categorized = new HashSet<string>(
+            supportRows.Concat(adhocRows).Concat(udefraRows).Concat(tilskudRows)
+                .Select(r => r.Key + "|" + r.Person),
+            StringComparer.OrdinalIgnoreCase);
+        var adminRows = allRows.Where(r => !categorized.Contains(r.Key + "|" + r.Person)).ToList();
+
+        WriteOpsumRow(ws, 2, "Support", 385, 32.1, SumRows(supportRows));
+        WriteOpsumRow(ws, 3, "Mindre rettelser (ad hoc)", 385, 32.1, SumRows(adhocRows));
+        WriteOpsumRow(ws, 4, "Udefrakommende opgaver", null, null, SumRows(udefraRows));
+        WriteOpsumRow(ws, 5, "Administrationssystem", 800, null, SumRows(adminRows));
+        WriteOpsumRow(ws, 6, "Tilskudsberegning", 300, null, SumRows(tilskudRows));
+
+        for (int col = 2; col <= 6; col++)
+            ws.Column(col).Style.NumberFormat.Format = "0.00";
+    }
+
+    private static void WriteOpsumRow(IXLWorksheet ws, int row, string label, double? budget, double? budgetPrMåned, double forbrugt)
+    {
+        ws.Cell(row, 1).Value = label;
+        if (budget.HasValue)
+        {
+            ws.Cell(row, 2).Value = budget.Value;
+            ws.Cell(row, 5).FormulaA1 = $"B{row}-D{row}"; // Rest = Budget - Forbrugt
+        }
+        if (budgetPrMåned.HasValue)
+        {
+            ws.Cell(row, 3).Value = budgetPrMåned.Value;
+            ws.Cell(row, 6).FormulaA1 = $"E{row}/12"; // Rest pr. måned = Rest / 12
+        }
+        ws.Cell(row, 4).Value = Math.Round(forbrugt, 2);
     }
 
     private static void WriteReportSheet(XLWorkbook workbook, string sheetName, List<ReportRow> rows)
