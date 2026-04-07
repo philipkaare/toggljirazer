@@ -37,7 +37,7 @@ public class ReportService
             .ToList();
     }
 
-    public async Task<(List<(string SheetName, List<ReportRow> Rows)> ReportSheets, List<VersionReportRow> VersionRows)> BuildReportAsync(
+    public async Task<(List<(string SheetName, List<ReportRow> Rows)> ReportSheets, List<VersionReportRow> VersionRows, List<Leverance> Leverances)> BuildReportAsync(
         List<TogglTimeEntry> periodEntries,
         List<TogglTimeEntry> allEntries)
     {
@@ -63,8 +63,8 @@ public class ReportService
         List<(string SheetName, List<ReportRow> Rows)> reportSheets;
         if (byMonth.Count <= 1)
         {
-            // Single month (or no entries) — use a single "Report" sheet
-            reportSheets = [("Report", BuildRowsFromEntries(periodEntries, jiraIssues))];
+            // Single month (or no entries) — use a single "Rapport" sheet
+            reportSheets = [("Rapport", BuildRowsFromEntries(periodEntries, jiraIssues))];
         }
         else
         {
@@ -80,7 +80,64 @@ public class ReportService
         // Build version report rows
         var versionRows = await BuildVersionRowsAsync(periodEntries, allEntries, jiraIssues);
 
-        return (reportSheets, versionRows);
+        // Build leverances from all-time rows
+        var allTimeRows = BuildRowsFromEntries(allEntries, jiraIssues);
+        var leverances = BuildLeverances(allTimeRows, jiraIssues);
+        Console.WriteLine($"Built {leverances.Count} leverance(s).");
+
+        return (reportSheets, versionRows, leverances);
+    }
+
+    /// <summary>
+    /// Builds leverance groupings. A leverance is anchored by tasks of type "Leverance".
+    /// All tasks that share the same first fix version are grouped under that leverance.
+    /// </summary>
+    private static List<Leverance> BuildLeverances(List<ReportRow> allRows, Dictionary<string, JiraIssue?> jiraIssues)
+    {
+        // Find all fix versions that have an anchor issue of type "Leverance"
+        var leveranceVersions = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var kv in jiraIssues)
+        {
+            var issue = kv.Value;
+            if (issue == null) continue;
+            if (!issue.IssueType.Equals("Leverance", StringComparison.OrdinalIgnoreCase)) continue;
+            foreach (var fv in issue.FixVersions)
+            {
+                if (!leveranceVersions.ContainsKey(fv))
+                    leveranceVersions[fv] = issue.Budget;
+            }
+        }
+
+        // Group all rows by their first fix version
+        var rowsByVersion = new Dictionary<string, List<ReportRow>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var row in allRows)
+        {
+            var firstVersion = row.FixVersions.FirstOrDefault();
+            if (string.IsNullOrEmpty(firstVersion)) continue;
+            if (!leveranceVersions.ContainsKey(firstVersion)) continue;
+
+            if (!rowsByVersion.TryGetValue(firstVersion, out var list))
+            {
+                list = new List<ReportRow>();
+                rowsByVersion[firstVersion] = list;
+            }
+            list.Add(row);
+        }
+
+        var leverances = new List<Leverance>();
+        foreach (var (version, budget) in leveranceVersions)
+        {
+            var lev = new Leverance
+            {
+                FixVersion = version,
+                Budget = budget,
+                Issues = rowsByVersion.TryGetValue(version, out var rows) ? rows : new List<ReportRow>()
+            };
+            leverances.Add(lev);
+        }
+
+        leverances.Sort((a, b) => string.Compare(a.FixVersion, b.FixVersion, StringComparison.OrdinalIgnoreCase));
+        return leverances;
     }
 
     private static List<ReportRow> BuildRowsFromEntries(
@@ -244,7 +301,8 @@ public class ReportService
         {
             using var workbook = new XLWorkbook(path);
             var sheet = workbook.Worksheets
-                .FirstOrDefault(ws => ws.Name.Equals("Version Report", StringComparison.OrdinalIgnoreCase));
+                .FirstOrDefault(ws => ws.Name.Equals("Versionsrapport", StringComparison.OrdinalIgnoreCase)
+                    || ws.Name.Equals("Version Report", StringComparison.OrdinalIgnoreCase));
             if (sheet == null) return;
 
             var lastCol = sheet.LastColumnUsed()?.ColumnNumber() ?? 0;
@@ -365,8 +423,17 @@ public class ReportService
     /// When <paramref name="extraColumns"/> is provided, any extra version-report columns are
     /// appended after the standard columns and their values are merged by version name.
     /// </summary>
-    public void WriteXlsx(List<(string SheetName, List<ReportRow> Rows)> reportSheets, List<VersionReportRow> versionRows, string outputPath, Dictionary<string, Dictionary<string, string>>? extraColumns = null)
+    public void WriteXlsx(
+        List<(string SheetName, List<ReportRow> Rows)> reportSheets,
+        List<VersionReportRow> versionRows,
+        List<Leverance> leverances,
+        string outputPath,
+        Dictionary<string, Dictionary<string, string>>? extraColumns = null)
     {
+        // Read existing data before creating new workbook
+        var existingTotalHours = ReadExistingOpsummeringTotalHours(outputPath);
+        var existingPlanData = ReadExistingPlanData(outputPath);
+
         using var workbook = new XLWorkbook();
 
         foreach (var (sheetName, rows) in reportSheets)
@@ -376,8 +443,8 @@ public class ReportService
 
         var extraColumnNames = GetExtraColumnNames(extraColumns);
 
-        // Version Report sheet
-        var versionSheet = workbook.Worksheets.Add("Version Report");
+        // Versionsrapport sheet (Danish title)
+        var versionSheet = workbook.Worksheets.Add("Versionsrapport");
         var standardHeaders = new[] { "Version", "Total Estimate Sum", "Worked Hours in Period", "Total Worked Hours", "Difference" };
         var versionHeaders = standardHeaders.Concat(extraColumnNames).ToArray();
 
@@ -422,73 +489,250 @@ public class ReportService
             versionSheet.Column(col).Style.NumberFormat.Format = "0.00";
 
         // Opsummering sheet
-        WriteOpsummeringSheet(workbook, reportSheets.SelectMany(s => s.Rows).ToList());
+        WriteOpsummeringSheet(workbook, reportSheets.SelectMany(s => s.Rows).ToList(), leverances, existingTotalHours);
+
+        // Plan sheet
+        WritePlanSheet(workbook, leverances, existingPlanData);
 
         workbook.SaveAs(outputPath);
         Console.WriteLine($"Report written to: {Path.GetFullPath(outputPath)}");
     }
 
-    private static void WriteOpsummeringSheet(XLWorkbook workbook, List<ReportRow> allRows)
+    /// <summary>
+    /// Reads existing "Total timer" values from the Opsummering sheet of an existing XLSX file.
+    /// Returns a dictionary mapping budget name → total hours value.
+    /// </summary>
+    private static Dictionary<string, double> ReadExistingOpsummeringTotalHours(string path)
+    {
+        var result = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        if (!File.Exists(path)) return result;
+
+        try
+        {
+            using var workbook = new XLWorkbook(path);
+            var ws = workbook.Worksheets
+                .FirstOrDefault(s => s.Name.Equals("Opsummering", StringComparison.OrdinalIgnoreCase));
+            if (ws == null) return result;
+
+            // Find the "Total timer" column
+            var lastCol = ws.LastColumnUsed()?.ColumnNumber() ?? 0;
+            int totalTimerCol = -1;
+            for (int col = 1; col <= lastCol; col++)
+            {
+                var header = ws.Cell(1, col).GetString();
+                if (header.Equals("Total timer", StringComparison.OrdinalIgnoreCase))
+                {
+                    totalTimerCol = col;
+                    break;
+                }
+            }
+
+            if (totalTimerCol < 0) return result;
+
+            var lastRow = ws.LastRowUsed()?.RowNumber() ?? 1;
+            for (int row = 2; row <= lastRow; row++)
+            {
+                var budget = ws.Cell(row, 1).GetString();
+                if (string.IsNullOrWhiteSpace(budget)) continue;
+                var cell = ws.Cell(row, totalTimerCol);
+                if (cell.TryGetValue<double>(out var hours))
+                    result[budget] = hours;
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Warning: Could not read existing Opsummering data: {ex.Message}");
+        }
+
+        return result;
+    }
+
+    private static void WriteOpsummeringSheet(XLWorkbook workbook, List<ReportRow> allRows, List<Leverance> leverances, Dictionary<string, double> existingTotalHours)
     {
         var ws = workbook.Worksheets.Add("Opsummering");
 
+        // Build a lookup from fix version to leverance budget
+        var versionToBudget = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var lev in leverances)
+        {
+            if (!string.IsNullOrEmpty(lev.Budget))
+                versionToBudget[lev.FixVersion] = lev.Budget;
+        }
+
+        // Resolve the effective budget for each row: use row budget, or inherit from leverance
+        string ResolveBudget(ReportRow row)
+        {
+            if (!string.IsNullOrWhiteSpace(row.Budget))
+                return row.Budget;
+            var firstVersion = row.FixVersions.FirstOrDefault();
+            if (firstVersion != null && versionToBudget.TryGetValue(firstVersion, out var levBudget))
+                return levBudget;
+            return "(Intet budget)";
+        }
+
+        // Group by resolved budget
+        var byBudget = allRows
+            .GroupBy(r => ResolveBudget(r), StringComparer.OrdinalIgnoreCase)
+            .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
         // Headers
-        ws.Cell(1, 2).Value = "Budget:";
-        ws.Cell(1, 3).Value = "Budget pr. måned:";
-        ws.Cell(1, 4).Value = "Forbrugt:";
-        ws.Cell(1, 5).Value = "Rest:";
-        ws.Cell(1, 6).Value = "Rest pr. måned:";
+        ws.Cell(1, 1).Value = "Budget";
+        ws.Cell(1, 2).Value = "Timer i periode";
+        ws.Cell(1, 3).Value = "Total timer";
 
-        static bool IsSupport(ReportRow r) =>
-            r.IssueType.Equals("Support", StringComparison.OrdinalIgnoreCase);
+        // Bold headers
+        ws.Range(1, 1, 1, 3).Style.Font.Bold = true;
 
-        static bool IsAdHoc(ReportRow r) =>
-            r.FixVersions.Any(v => v.Contains("ad hoc", StringComparison.OrdinalIgnoreCase));
+        for (int i = 0; i < byBudget.Count; i++)
+        {
+            var group = byBudget[i];
+            var row = i + 2;
+            var periodHours = group.Sum(r =>
+                double.TryParse(r.TimeUsedDecimal, NumberStyles.Float, CultureInfo.InvariantCulture, out var h) ? h : 0);
 
-        static bool IsUdefrakommende(ReportRow r) =>
-            r.FixVersions.Any(v => v.StartsWith("udefrakommende", StringComparison.OrdinalIgnoreCase));
+            ws.Cell(row, 1).Value = group.Key;
+            ws.Cell(row, 2).Value = Math.Round(periodHours, 2);
 
-        static bool IsTilskudsberegning(ReportRow r) =>
-            r.FixVersions.Any(v => v.Equals("Tilskudsberegning", StringComparison.OrdinalIgnoreCase));
+            // Preserve existing "Total timer" value if available; otherwise leave empty for manual entry
+            if (existingTotalHours.TryGetValue(group.Key, out var existingTotal))
+                ws.Cell(row, 3).Value = existingTotal;
+        }
 
-        static double SumRows(IEnumerable<ReportRow> rows) =>
-            rows.Sum(r => double.TryParse(r.TimeUsedDecimal, NumberStyles.Float, CultureInfo.InvariantCulture, out var h) ? h : 0);
-
-        var supportRows = allRows.Where(IsSupport).ToList();
-        var adhocRows = allRows.Where(IsAdHoc).ToList();
-        var udefraRows = allRows.Where(IsUdefrakommende).ToList();
-        var tilskudRows = allRows.Where(IsTilskudsberegning).ToList();
-
-        var categorized = new HashSet<string>(
-            supportRows.Concat(adhocRows).Concat(udefraRows).Concat(tilskudRows)
-                .Select(r => r.Key + "|" + r.Person),
-            StringComparer.OrdinalIgnoreCase);
-        var adminRows = allRows.Where(r => !categorized.Contains(r.Key + "|" + r.Person)).ToList();
-
-        WriteOpsumRow(ws, 2, "Support", 385, 32.1, SumRows(supportRows));
-        WriteOpsumRow(ws, 3, "Mindre rettelser (ad hoc)", 385, 32.1, SumRows(adhocRows));
-        WriteOpsumRow(ws, 4, "Udefrakommende opgaver", null, null, SumRows(udefraRows));
-        WriteOpsumRow(ws, 5, "Administrationssystem", 800, null, SumRows(adminRows));
-        WriteOpsumRow(ws, 6, "Tilskudsberegning", 300, null, SumRows(tilskudRows));
-
-        for (int col = 2; col <= 6; col++)
+        for (int col = 2; col <= 3; col++)
             ws.Column(col).Style.NumberFormat.Format = "0.00";
     }
 
-    private static void WriteOpsumRow(IXLWorksheet ws, int row, string label, double? budget, double? budgetPrMåned, double forbrugt)
+    /// <summary>
+    /// Reads existing Plan sheet data from an XLSX file so that user-edited week cells
+    /// can be preserved across regenerations. Returns a dictionary mapping leverance name
+    /// to a dictionary of week number → cell value.
+    /// </summary>
+    private static Dictionary<string, Dictionary<int, string>> ReadExistingPlanData(string path)
     {
-        ws.Cell(row, 1).Value = label;
-        if (budget.HasValue)
+        var result = new Dictionary<string, Dictionary<int, string>>(StringComparer.OrdinalIgnoreCase);
+        if (!File.Exists(path)) return result;
+
+        try
         {
-            ws.Cell(row, 2).Value = budget.Value;
-            ws.Cell(row, 5).FormulaA1 = $"B{row}-D{row}"; // Rest = Budget - Forbrugt
+            using var workbook = new XLWorkbook(path);
+            var ws = workbook.Worksheets
+                .FirstOrDefault(s => s.Name.Equals("Plan", StringComparison.OrdinalIgnoreCase));
+            if (ws == null) return result;
+
+            var lastCol = ws.LastColumnUsed()?.ColumnNumber() ?? 0;
+            var lastRow = ws.LastRowUsed()?.RowNumber() ?? 1;
+
+            // Read week numbers from header row (row 1, starting at col 3)
+            var weekByCol = new Dictionary<int, int>();
+            for (int col = 3; col <= lastCol; col++)
+            {
+                var header = ws.Cell(1, col).GetString();
+                if (int.TryParse(header, out var weekNum))
+                    weekByCol[col] = weekNum;
+            }
+
+            // Read each leverance row
+            for (int row = 2; row <= lastRow; row++)
+            {
+                var name = ws.Cell(row, 1).GetString();
+                if (string.IsNullOrWhiteSpace(name)) continue;
+
+                var weekValues = new Dictionary<int, string>();
+                foreach (var (col, weekNum) in weekByCol)
+                {
+                    var val = ws.Cell(row, col).GetString();
+                    if (!string.IsNullOrEmpty(val))
+                        weekValues[weekNum] = val;
+                }
+
+                result[name] = weekValues;
+            }
         }
-        if (budgetPrMåned.HasValue)
+        catch (Exception ex)
         {
-            ws.Cell(row, 3).Value = budgetPrMåned.Value;
-            ws.Cell(row, 6).FormulaA1 = $"E{row}/12"; // Rest pr. måned = Rest / 12
+            Console.Error.WriteLine($"Warning: Could not read existing Plan data: {ex.Message}");
         }
-        ws.Cell(row, 4).Value = Math.Round(forbrugt, 2);
+
+        return result;
+    }
+
+    private static void WritePlanSheet(XLWorkbook workbook, List<Leverance> leverances, Dictionary<string, Dictionary<int, string>> existingPlanData)
+    {
+        var ws = workbook.Worksheets.Add("Plan");
+
+        // Determine week range
+        var currentCulture = CultureInfo.CurrentCulture;
+        var today = DateTime.Today;
+        var currentWeek = ISOWeek.GetWeekOfYear(today);
+        var currentYear = ISOWeek.GetYear(today);
+
+        // Collect all week numbers from existing plan data
+        var existingWeeks = existingPlanData.Values
+            .SelectMany(d => d.Keys)
+            .Distinct()
+            .ToHashSet();
+
+        // Build week list: start from week 1, go through at least current week
+        int maxWeek = Math.Max(currentWeek, existingWeeks.Count > 0 ? existingWeeks.Max() : 0);
+        // Ensure the current week is included
+        if (maxWeek < currentWeek) maxWeek = currentWeek;
+
+        var weeks = Enumerable.Range(1, maxWeek).ToList();
+
+        // Headers
+        ws.Cell(1, 1).Value = "Leverance";
+        ws.Cell(1, 2).Value = "Total timer";
+        ws.Range(1, 1, 1, 2).Style.Font.Bold = true;
+
+        for (int w = 0; w < weeks.Count; w++)
+        {
+            var col = w + 3;
+            ws.Cell(1, col).Value = weeks[w];
+            ws.Cell(1, col).Style.Font.Bold = true;
+
+            // Mark current week column with green background
+            if (weeks[w] == currentWeek)
+            {
+                ws.Cell(1, col).Style.Fill.BackgroundColor = XLColor.LightGreen;
+            }
+        }
+
+        // Write leverance rows
+        for (int i = 0; i < leverances.Count; i++)
+        {
+            var lev = leverances[i];
+            var row = i + 2;
+
+            ws.Cell(row, 1).Value = lev.FixVersion;
+            ws.Cell(row, 2).Value = Math.Round(lev.TotalHours, 2);
+
+            // Restore existing week cell values
+            if (existingPlanData.TryGetValue(lev.FixVersion, out var weekValues))
+            {
+                for (int w = 0; w < weeks.Count; w++)
+                {
+                    if (weekValues.TryGetValue(weeks[w], out var val) && !string.IsNullOrEmpty(val))
+                    {
+                        var col = w + 3;
+                        // Try to preserve numeric values as numbers
+                        if (double.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out var numVal))
+                            ws.Cell(row, col).Value = numVal;
+                        else
+                            ws.Cell(row, col).Value = val;
+                    }
+                }
+            }
+
+            // Mark current week column cells with green background
+            var currentWeekColIndex = weeks.IndexOf(currentWeek);
+            if (currentWeekColIndex >= 0)
+            {
+                ws.Cell(row, currentWeekColIndex + 3).Style.Fill.BackgroundColor = XLColor.LightGreen;
+            }
+        }
+
+        ws.Column(2).Style.NumberFormat.Format = "0.00";
     }
 
     private static void WriteReportSheet(XLWorkbook workbook, string sheetName, List<ReportRow> rows)
