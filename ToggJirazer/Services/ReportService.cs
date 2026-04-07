@@ -662,10 +662,8 @@ public class ReportService
         var ws = workbook.Worksheets.Add("Plan");
 
         // Determine week range
-        var currentCulture = CultureInfo.CurrentCulture;
         var today = DateTime.Today;
         var currentWeek = ISOWeek.GetWeekOfYear(today);
-        var currentYear = ISOWeek.GetYear(today);
 
         // Collect all week numbers from existing plan data
         var existingWeeks = existingPlanData.Values
@@ -675,8 +673,6 @@ public class ReportService
 
         // Build week list: start from week 1, go through at least current week
         int maxWeek = Math.Max(currentWeek, existingWeeks.Count > 0 ? existingWeeks.Max() : 0);
-        // Ensure the current week is included
-        if (maxWeek < currentWeek) maxWeek = currentWeek;
 
         var weeks = Enumerable.Range(1, maxWeek).ToList();
 
