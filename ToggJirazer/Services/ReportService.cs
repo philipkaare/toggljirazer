@@ -693,6 +693,12 @@ public class ReportService
             {
                 ws.Cell(1, col).Style.Fill.BackgroundColor = XLColor.LightGreen;
             }
+
+            // Hide weeks more than two weeks before the current week
+            if (weeks[w] < currentWeek - 2)
+            {
+                ws.Column(col).Hide();
+            }
         }
 
         // Write leverance rows
