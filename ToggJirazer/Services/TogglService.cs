@@ -40,7 +40,7 @@ public class TogglService : IDisposable
         var url = $"https://track.toggl.com/analytics/api/organizations/{_config.OrganizationId}/query" +
                   "?response_format=json_row";
         int page = 1;
-        const int perPage = 50;
+        const int perPage = 100;
 
         Console.WriteLine($"Fetching Toggl entries from {startDate:yyyy-MM-dd} to {endDate:yyyy-MM-dd}...");
 

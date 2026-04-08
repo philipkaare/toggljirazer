@@ -19,15 +19,18 @@ public class SettingsService
 
     public AppConfig Load()
     {
-        if (!File.Exists(_settingsPath))
-            return new AppConfig();
+        var node = LoadJsonNode(_settingsPath) ?? new JsonObject();
+
+        var devPath = Path.Combine(
+            Path.GetDirectoryName(_settingsPath) ?? string.Empty,
+            Path.GetFileNameWithoutExtension(_settingsPath) + ".development" + Path.GetExtension(_settingsPath));
+
+        var devNode = LoadJsonNode(devPath);
+        if (devNode != null)
+            MergeInto(node, devNode);
 
         try
         {
-            var json = File.ReadAllText(_settingsPath);
-            var node = JsonNode.Parse(json)?.AsObject();
-            if (node == null) return new AppConfig();
-
             return new AppConfig
             {
                 Toggl = new TogglConfig
@@ -57,6 +60,28 @@ public class SettingsService
         catch
         {
             return new AppConfig();
+        }
+    }
+
+    private static JsonObject? LoadJsonNode(string path)
+    {
+        if (!File.Exists(path)) return null;
+        try
+        {
+            var json = File.ReadAllText(path);
+            return JsonNode.Parse(json)?.AsObject();
+        }
+        catch { return null; }
+    }
+
+    private static void MergeInto(JsonObject target, JsonObject source)
+    {
+        foreach (var (key, value) in source)
+        {
+            if (value is JsonObject sourceObj && target[key] is JsonObject targetObj)
+                MergeInto(targetObj, sourceObj);
+            else
+                target[key] = value?.DeepClone();
         }
     }
 

@@ -420,6 +420,7 @@ public class ReportService
         // Apply number format with 2 decimal places to numeric columns on version sheet
         for (int col = 2; col <= 5; col++)
             versionSheet.Column(col).Style.NumberFormat.Format = "0.00";
+        versionSheet.Columns().AdjustToContents();
 
         // Opsummering sheet
         WriteOpsummeringSheet(workbook, reportSheets.SelectMany(s => s.Rows).ToList());
@@ -433,6 +434,7 @@ public class ReportService
         var ws = workbook.Worksheets.Add("Opsummering");
 
         // Headers
+        ws.Cell(1, 1).Value = "Kategori";
         ws.Cell(1, 2).Value = "Budget:";
         ws.Cell(1, 3).Value = "Budget pr. måned:";
         ws.Cell(1, 4).Value = "Forbrugt:";
@@ -473,6 +475,9 @@ public class ReportService
 
         for (int col = 2; col <= 6; col++)
             ws.Column(col).Style.NumberFormat.Format = "0.00";
+
+        ws.Range(1, 1, 6, 6).CreateTable();
+        ws.Columns().AdjustToContents();
     }
 
     private static void WriteOpsumRow(IXLWorksheet ws, int row, string label, double? budget, double? budgetPrMåned, double forbrugt)
@@ -535,6 +540,7 @@ public class ReportService
 
         // Apply locale-agnostic number format with 2 decimal places to the decimal hours column
         worksheet.Column(9).Style.NumberFormat.Format = "0.00";
+        worksheet.Columns().AdjustToContents();
     }
 
     /// <summary>

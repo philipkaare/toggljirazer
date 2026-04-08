@@ -154,7 +154,7 @@
         </Grid>
 
         <!-- Log output -->
-        <TextBox Grid.Row="2" x:Name="LogTextBox"
+        <TextBox Grid.Row="2" x:Name="LogTextBox" Height="Auto"
                  IsReadOnly="True"
                  VerticalScrollBarVisibility="Auto"
                  HorizontalScrollBarVisibility="Auto"
