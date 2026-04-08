@@ -432,7 +432,7 @@ public class ReportService
     {
         // Read existing data before creating new workbook
         var existingTotalHours = ReadExistingOpsummeringTotalHours(outputPath);
-        var existingPlanData = ReadExistingPlanData(outputPath);
+        var (existingWeekData, extraPlanHeaders, extraPlanData) = ReadExistingPlanData(outputPath);
 
         using var workbook = new XLWorkbook();
 
@@ -493,7 +493,7 @@ public class ReportService
         WriteOpsummeringSheet(workbook, reportSheets.SelectMany(s => s.Rows).ToList(), leverances, existingTotalHours);
 
         // Plan sheet
-        WritePlanSheet(workbook, leverances, existingPlanData);
+        WritePlanSheet(workbook, leverances, existingWeekData, extraPlanHeaders, extraPlanData);
 
         workbook.SaveAs(outputPath);
         Console.WriteLine($"Report written to: {Path.GetFullPath(outputPath)}");
@@ -605,32 +605,47 @@ public class ReportService
     }
 
     /// <summary>
-    /// Reads existing Plan sheet data from an XLSX file so that user-edited week cells
-    /// can be preserved across regenerations. Returns a dictionary mapping leverance name
-    /// to a dictionary of week number → cell value.
+    /// Reads existing Plan sheet data from an XLSX file so that user-edited cells
+    /// can be preserved across regenerations.
+    /// Returns:
+    ///   weekData     — leverance name → (week number → cell value) for integer-headered columns
+    ///   extraHeaders — ordered list of non-integer column headers found to the right of week columns
+    ///   extraData    — leverance name → (column header → cell value) for those extra columns
     /// </summary>
-    private static Dictionary<string, Dictionary<int, string>> ReadExistingPlanData(string path)
+    private static (Dictionary<string, Dictionary<int, string>> WeekData, List<string> ExtraHeaders, Dictionary<string, Dictionary<string, string>> ExtraData) ReadExistingPlanData(string path)
     {
-        var result = new Dictionary<string, Dictionary<int, string>>(StringComparer.OrdinalIgnoreCase);
-        if (!File.Exists(path)) return result;
+        var weekData = new Dictionary<string, Dictionary<int, string>>(StringComparer.OrdinalIgnoreCase);
+        var extraHeaders = new List<string>();
+        var extraData = new Dictionary<string, Dictionary<string, string>>(StringComparer.OrdinalIgnoreCase);
+
+        if (!File.Exists(path)) return (weekData, extraHeaders, extraData);
 
         try
         {
             using var workbook = new XLWorkbook(path);
             var ws = workbook.Worksheets
                 .FirstOrDefault(s => s.Name.Equals("Plan", StringComparison.OrdinalIgnoreCase));
-            if (ws == null) return result;
+            if (ws == null) return (weekData, extraHeaders, extraData);
 
             var lastCol = ws.LastColumnUsed()?.ColumnNumber() ?? 0;
             var lastRow = ws.LastRowUsed()?.RowNumber() ?? 1;
 
-            // Read week numbers from header row (row 1, starting at col 3)
+            // Read column types from header row (row 1, starting at col 3)
             var weekByCol = new Dictionary<int, int>();
+            var extraByCol = new Dictionary<int, string>();
             for (int col = 3; col <= lastCol; col++)
             {
                 var header = ws.Cell(1, col).GetString();
                 if (int.TryParse(header, out var weekNum))
+                {
                     weekByCol[col] = weekNum;
+                }
+                else if (!string.IsNullOrWhiteSpace(header))
+                {
+                    extraByCol[col] = header;
+                    if (!extraHeaders.Contains(header, StringComparer.OrdinalIgnoreCase))
+                        extraHeaders.Add(header);
+                }
             }
 
             // Read each leverance row
@@ -646,8 +661,16 @@ public class ReportService
                     if (!string.IsNullOrEmpty(val))
                         weekValues[weekNum] = val;
                 }
+                weekData[name] = weekValues;
 
-                result[name] = weekValues;
+                var extraValues = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var (col, header) in extraByCol)
+                {
+                    var val = ws.Cell(row, col).GetString();
+                    if (!string.IsNullOrEmpty(val))
+                        extraValues[header] = val;
+                }
+                extraData[name] = extraValues;
             }
         }
         catch (Exception ex)
@@ -655,10 +678,15 @@ public class ReportService
             Console.Error.WriteLine($"Warning: Could not read existing Plan data: {ex.Message}");
         }
 
-        return result;
+        return (weekData, extraHeaders, extraData);
     }
 
-    private static void WritePlanSheet(XLWorkbook workbook, List<Leverance> leverances, Dictionary<string, Dictionary<int, string>> existingPlanData)
+    private static void WritePlanSheet(
+        XLWorkbook workbook,
+        List<Leverance> leverances,
+        Dictionary<string, Dictionary<int, string>> existingWeekData,
+        List<string> extraHeaders,
+        Dictionary<string, Dictionary<string, string>> extraColumnData)
     {
         var ws = workbook.Worksheets.Add("Plan");
 
@@ -667,7 +695,7 @@ public class ReportService
         var currentWeek = ISOWeek.GetWeekOfYear(today);
 
         // Collect all week numbers from existing plan data
-        var existingWeeks = existingPlanData.Values
+        var existingWeeks = existingWeekData.Values
             .SelectMany(d => d.Keys)
             .Distinct()
             .ToHashSet();
@@ -677,11 +705,12 @@ public class ReportService
 
         var weeks = Enumerable.Range(1, maxWeek).ToList();
 
-        // Headers
+        // Headers — fixed columns
         ws.Cell(1, 1).Value = "Leverance";
         ws.Cell(1, 2).Value = "Total timer";
         ws.Range(1, 1, 1, 2).Style.Font.Bold = true;
 
+        // Week number headers
         for (int w = 0; w < weeks.Count; w++)
         {
             var col = w + 3;
@@ -695,7 +724,17 @@ public class ReportService
             }
         }
 
+        // Extra (user-added) column headers after the week columns
+        var extraStartCol = weeks.Count + 3;
+        for (int e = 0; e < extraHeaders.Count; e++)
+        {
+            var col = extraStartCol + e;
+            ws.Cell(1, col).Value = extraHeaders[e];
+            ws.Cell(1, col).Style.Font.Bold = true;
+        }
+
         // Write leverance rows
+        var currentWeekColIndex = weeks.IndexOf(currentWeek);
         for (int i = 0; i < leverances.Count; i++)
         {
             var lev = leverances[i];
@@ -705,7 +744,7 @@ public class ReportService
             ws.Cell(row, 2).Value = Math.Round(lev.TotalHours, 2);
 
             // Restore existing week cell values
-            if (existingPlanData.TryGetValue(lev.FixVersion, out var weekValues))
+            if (existingWeekData.TryGetValue(lev.FixVersion, out var weekValues))
             {
                 for (int w = 0; w < weeks.Count; w++)
                 {
@@ -721,8 +760,24 @@ public class ReportService
                 }
             }
 
+            // Restore extra (user-added) column values
+            if (extraColumnData.TryGetValue(lev.FixVersion, out var extraValues))
+            {
+                for (int e = 0; e < extraHeaders.Count; e++)
+                {
+                    var col = extraStartCol + e;
+                    if (extraValues.TryGetValue(extraHeaders[e], out var val) && !string.IsNullOrEmpty(val))
+                    {
+                        // Try to preserve numeric values as numbers
+                        if (double.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out var numVal))
+                            ws.Cell(row, col).Value = numVal;
+                        else
+                            ws.Cell(row, col).Value = val;
+                    }
+                }
+            }
+
             // Mark current week column cells with green background
-            var currentWeekColIndex = weeks.IndexOf(currentWeek);
             if (currentWeekColIndex >= 0)
             {
                 ws.Cell(row, currentWeekColIndex + 3).Style.Fill.BackgroundColor = XLColor.LightGreen;
