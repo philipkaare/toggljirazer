@@ -625,7 +625,7 @@ public class ReportService
             if (!issue.IssueType.Equals("Leverance", StringComparison.OrdinalIgnoreCase)) continue;
             if (string.IsNullOrWhiteSpace(issue.Budget)) continue;
 
-            foreach (var version in issue.FixVersions.Where(v => !string.IsNullOrWhiteSpace(v)))
+            foreach (var version in (issue.FixVersions ?? []).Where(v => !string.IsNullOrWhiteSpace(v)))
             {
                 if (!versionToBudget.ContainsKey(version))
                     versionToBudget[version] = issue.Budget;
