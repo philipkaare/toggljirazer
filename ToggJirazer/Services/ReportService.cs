@@ -680,10 +680,12 @@ public class ReportService
         for (int i = 0; i < categories.Count; i++)
             ws.Cell(startRowTable2, i + 2).Value = categories[i];
 
-        var currentWeek = ISOWeek.GetWeekOfYear(DateTime.Today);
-        var maxWeek = Math.Max(currentWeek, weeklyCategoryConsumedHours.Count > 0 ? weeklyCategoryConsumedHours.Keys.Max() : 0);
-        if (maxWeek == 0) maxWeek = currentWeek;
-        var weeks = Enumerable.Range(1, maxWeek).ToList();
+        var weeks = weeklyCategoryConsumedHours.Count > 0
+            ? Enumerable.Range(
+                weeklyCategoryConsumedHours.Keys.Min(),
+                weeklyCategoryConsumedHours.Keys.Max() - weeklyCategoryConsumedHours.Keys.Min() + 1)
+                .ToList()
+            : new List<int>();
 
         for (int i = 0; i < weeks.Count; i++)
         {
