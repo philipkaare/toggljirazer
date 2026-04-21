@@ -788,7 +788,11 @@ public class ReportService
         if (string.IsNullOrWhiteSpace(description))
             return null;
 
-        var firstToken = description.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
+        var tokens = description.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        if (tokens.Length == 0)
+            return null;
+
+        var firstToken = tokens[0];
 
         var match = System.Text.RegularExpressions.Regex.Match(
             firstToken,
