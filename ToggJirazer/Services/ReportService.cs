@@ -42,7 +42,7 @@ public class ReportService
         List<VersionReportRow> VersionRows,
         List<Leverance> Leverances,
         Dictionary<string, double> CategoryConsumedHours,
-        Dictionary<int, Dictionary<string, double>> WeeklyCategoryConsumedHours)> BuildReportAsync(
+        Dictionary<(int Year, int Week), Dictionary<string, double>> WeeklyCategoryConsumedHours)> BuildReportAsync(
         List<TogglTimeEntry> periodEntries,
         List<TogglTimeEntry> allEntries)
     {
@@ -434,7 +434,7 @@ public class ReportService
         List<VersionReportRow> versionRows,
         List<Leverance> leverances,
         Dictionary<string, double> categoryConsumedHours,
-        Dictionary<int, Dictionary<string, double>> weeklyCategoryConsumedHours,
+        Dictionary<(int Year, int Week), Dictionary<string, double>> weeklyCategoryConsumedHours,
         string outputPath,
         Dictionary<string, Dictionary<string, string>>? extraColumns = null)
     {
@@ -575,7 +575,7 @@ public class ReportService
         return result;
     }
 
-    private static (Dictionary<string, double> CategoryConsumedHours, Dictionary<int, Dictionary<string, double>> WeeklyCategoryConsumedHours)
+    private static (Dictionary<string, double> CategoryConsumedHours, Dictionary<(int Year, int Week), Dictionary<string, double>> WeeklyCategoryConsumedHours)
         BuildCategoryConsumption(List<TogglTimeEntry> entries, Dictionary<string, JiraIssue?> jiraIssues)
     {
         var versionToBudget = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -605,7 +605,7 @@ public class ReportService
         }
 
         var categoryConsumedHours = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-        var weeklyCategoryConsumedHours = new Dictionary<int, Dictionary<string, double>>();
+        var weeklyCategoryConsumedHours = new Dictionary<(int Year, int Week), Dictionary<string, double>>();
 
         foreach (var entry in entries)
         {
@@ -617,11 +617,13 @@ public class ReportService
             categoryConsumedHours.TryGetValue(category, out var currentCategoryHours);
             categoryConsumedHours[category] = currentCategoryHours + hours;
 
-            var week = ISOWeek.GetWeekOfYear(entry.Start.Date);
-            if (!weeklyCategoryConsumedHours.TryGetValue(week, out var byCategory))
+            var weekKey = (
+                Year: ISOWeek.GetYear(entry.Start.Date),
+                Week: ISOWeek.GetWeekOfYear(entry.Start.Date));
+            if (!weeklyCategoryConsumedHours.TryGetValue(weekKey, out var byCategory))
             {
                 byCategory = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
-                weeklyCategoryConsumedHours[week] = byCategory;
+                weeklyCategoryConsumedHours[weekKey] = byCategory;
             }
 
             byCategory.TryGetValue(category, out var currentWeekCategoryHours);
@@ -634,7 +636,7 @@ public class ReportService
     private static void WriteOpsummeringSheet(
         XLWorkbook workbook,
         Dictionary<string, double> categoryConsumedHours,
-        Dictionary<int, Dictionary<string, double>> weeklyCategoryConsumedHours,
+        Dictionary<(int Year, int Week), Dictionary<string, double>> weeklyCategoryConsumedHours,
         Dictionary<string, double> existingYearlyBudgets)
     {
         var ws = workbook.Worksheets.Add("Opsummering");
@@ -680,18 +682,17 @@ public class ReportService
         for (int i = 0; i < categories.Count; i++)
             ws.Cell(startRowTable2, i + 2).Value = categories[i];
 
-        var weeks = weeklyCategoryConsumedHours.Count > 0
-            ? Enumerable.Range(
-                weeklyCategoryConsumedHours.Keys.Min(),
-                weeklyCategoryConsumedHours.Keys.Max() - weeklyCategoryConsumedHours.Keys.Min() + 1)
-                .ToList()
-            : new List<int>();
+        var weeks = weeklyCategoryConsumedHours.Keys
+            .OrderBy(w => w.Year)
+            .ThenBy(w => w.Week)
+            .ToList();
+        var hasMultipleYears = weeks.Select(w => w.Year).Distinct().Skip(1).Any();
 
         for (int i = 0; i < weeks.Count; i++)
         {
             var row = startRowTable2 + i + 1;
             var week = weeks[i];
-            ws.Cell(row, 1).Value = week;
+            ws.Cell(row, 1).Value = hasMultipleYears ? $"{week.Year}-{week.Week:D2}" : week.Week;
 
             weeklyCategoryConsumedHours.TryGetValue(week, out var weekByCategory);
             for (int c = 0; c < categories.Count; c++)
