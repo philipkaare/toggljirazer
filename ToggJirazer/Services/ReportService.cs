@@ -560,14 +560,15 @@ public class ReportService
                 versionToBudget[lev.FixVersion] = lev.Budget;
         }
 
-        // Resolve the effective budget for each row: use row budget, or inherit from leverance
+        // Resolve the effective budget for each row: prefer leverance budget (release-level),
+        // then fall back to row budget if no leverance mapping exists.
         string ResolveBudget(ReportRow row)
         {
-            if (!string.IsNullOrWhiteSpace(row.Budget))
-                return row.Budget;
             var firstVersion = row.FixVersions.FirstOrDefault();
             if (firstVersion != null && versionToBudget.TryGetValue(firstVersion, out var levBudget))
                 return levBudget;
+            if (!string.IsNullOrWhiteSpace(row.Budget))
+                return row.Budget;
             return "(Intet budget)";
         }
 
