@@ -781,15 +781,19 @@ public class ReportService
 
     /// <summary>
     /// Extracts a JIRA issue key (e.g. PROJECT-123) from a time entry description.
-    /// The key must match the pattern LETTERS-DIGITS optionally followed by whitespace/punctuation.
+    /// Only the first space-delimited token is considered when matching.
     /// </summary>
     private static string? ExtractJiraKey(string description)
     {
         if (string.IsNullOrWhiteSpace(description))
             return null;
 
+        var firstToken = description.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(firstToken))
+            return null;
+
         var match = System.Text.RegularExpressions.Regex.Match(
-            description.Trim(),
+            firstToken,
             @"^([A-Z][A-Z0-9]+-\d+)",
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
