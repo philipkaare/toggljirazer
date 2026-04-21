@@ -150,6 +150,8 @@ public class ReportService
         List<TogglTimeEntry> entries,
         Dictionary<string, JiraIssue?> jiraIssues)
     {
+        var versionToBudget = BuildLeveranceBudgetByVersion(jiraIssues);
+
         var groups = entries
             .Select(e => new { Entry = e, Key = ExtractJiraKey(e.Description) })
             .Where(x => !string.IsNullOrEmpty(x.Key))
@@ -172,7 +174,7 @@ public class ReportService
                 IssueType = issue?.IssueType ?? string.Empty,
                 Key = jiraKey,
                 Summary = issue?.Summary ?? string.Empty,
-                Budget = issue?.Budget ?? string.Empty,
+                Budget = ResolveIssueBudget(issue, versionToBudget, string.Empty),
                 Account = issue?.Account ?? string.Empty,
                 Person = group.Key.User,
                 StartDate = startDate,
@@ -578,30 +580,11 @@ public class ReportService
     private static (Dictionary<string, double> CategoryConsumedHours, Dictionary<(int Year, int Week), Dictionary<string, double>> WeeklyCategoryConsumedHours)
         BuildCategoryConsumption(List<TogglTimeEntry> entries, Dictionary<string, JiraIssue?> jiraIssues)
     {
-        var versionToBudget = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var issue in jiraIssues.Values)
-        {
-            if (issue == null) continue;
-            if (!issue.IssueType.Equals("Leverance", StringComparison.OrdinalIgnoreCase)) continue;
-            if (string.IsNullOrWhiteSpace(issue.Budget)) continue;
-
-            foreach (var version in issue.FixVersions)
-            {
-                if (!versionToBudget.ContainsKey(version))
-                    versionToBudget[version] = issue.Budget;
-            }
-        }
+        var versionToBudget = BuildLeveranceBudgetByVersion(jiraIssues);
 
         string ResolveCategory(JiraIssue? issue)
         {
-            if (!string.IsNullOrWhiteSpace(issue?.Budget))
-                return issue.Budget!;
-
-            var firstVersion = issue?.FixVersions.FirstOrDefault();
-            if (!string.IsNullOrWhiteSpace(firstVersion) && versionToBudget.TryGetValue(firstVersion, out var inheritedBudget))
-                return inheritedBudget;
-
-            return "(Intet budget)";
+            return ResolveIssueBudget(issue, versionToBudget, "(Intet budget)");
         }
 
         var categoryConsumedHours = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
@@ -631,6 +614,40 @@ public class ReportService
         }
 
         return (categoryConsumedHours, weeklyCategoryConsumedHours);
+    }
+
+    private static Dictionary<string, string> BuildLeveranceBudgetByVersion(Dictionary<string, JiraIssue?> jiraIssues)
+    {
+        var versionToBudget = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var issue in jiraIssues.Values)
+        {
+            if (issue == null) continue;
+            if (!issue.IssueType.Equals("Leverance", StringComparison.OrdinalIgnoreCase)) continue;
+            if (string.IsNullOrWhiteSpace(issue.Budget)) continue;
+
+            foreach (var version in issue.FixVersions.Where(v => !string.IsNullOrWhiteSpace(v)))
+            {
+                if (!versionToBudget.ContainsKey(version))
+                    versionToBudget[version] = issue.Budget;
+            }
+        }
+
+        return versionToBudget;
+    }
+
+    private static string ResolveIssueBudget(
+        JiraIssue? issue,
+        Dictionary<string, string> versionToBudget,
+        string fallbackWhenMissing)
+    {
+        var firstVersion = issue?.FixVersions.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
+        if (!string.IsNullOrWhiteSpace(firstVersion) && versionToBudget.TryGetValue(firstVersion, out var overriddenBudget))
+            return overriddenBudget;
+
+        if (!string.IsNullOrWhiteSpace(issue?.Budget))
+            return issue.Budget!;
+
+        return fallbackWhenMissing;
     }
 
     private static void WriteOpsummeringSheet(
