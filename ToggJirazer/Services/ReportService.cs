@@ -37,7 +37,12 @@ public class ReportService
             .ToList();
     }
 
-    public async Task<(List<(string SheetName, List<ReportRow> Rows)> ReportSheets, List<VersionReportRow> VersionRows, List<Leverance> Leverances)> BuildReportAsync(
+    public async Task<(
+        List<(string SheetName, List<ReportRow> Rows)> ReportSheets,
+        List<VersionReportRow> VersionRows,
+        List<Leverance> Leverances,
+        Dictionary<string, double> CategoryConsumedHours,
+        Dictionary<int, Dictionary<string, double>> WeeklyCategoryConsumedHours)> BuildReportAsync(
         List<TogglTimeEntry> periodEntries,
         List<TogglTimeEntry> allEntries)
     {
@@ -85,7 +90,8 @@ public class ReportService
         var leverances = BuildLeverances(allTimeRows, jiraIssues);
         Console.WriteLine($"Built {leverances.Count} leverance(s).");
 
-        return (reportSheets, versionRows, leverances);
+        var (categoryConsumedHours, weeklyCategoryConsumedHours) = BuildCategoryConsumption(periodEntries, jiraIssues);
+        return (reportSheets, versionRows, leverances, categoryConsumedHours, weeklyCategoryConsumedHours);
     }
 
     /// <summary>
@@ -427,11 +433,13 @@ public class ReportService
         List<(string SheetName, List<ReportRow> Rows)> reportSheets,
         List<VersionReportRow> versionRows,
         List<Leverance> leverances,
+        Dictionary<string, double> categoryConsumedHours,
+        Dictionary<int, Dictionary<string, double>> weeklyCategoryConsumedHours,
         string outputPath,
         Dictionary<string, Dictionary<string, string>>? extraColumns = null)
     {
         // Read existing data before creating new workbook
-        var existingTotalHours = ReadExistingOpsummeringTotalHours(outputPath);
+        var existingYearlyBudgets = ReadExistingOpsummeringYearlyBudgets(outputPath);
         var existingPlanData = ReadExistingPlanData(outputPath);
 
         using var workbook = new XLWorkbook();
@@ -490,7 +498,7 @@ public class ReportService
         versionSheet.Columns().AdjustToContents();
 
         // Opsummering sheet
-        WriteOpsummeringSheet(workbook, reportSheets.SelectMany(s => s.Rows).ToList(), leverances, existingTotalHours);
+        WriteOpsummeringSheet(workbook, categoryConsumedHours, weeklyCategoryConsumedHours, existingYearlyBudgets);
 
         // Plan sheet
         WritePlanSheet(workbook, leverances, existingPlanData);
@@ -500,10 +508,10 @@ public class ReportService
     }
 
     /// <summary>
-    /// Reads existing "Total timer" values from the Opsummering sheet of an existing XLSX file.
-    /// Returns a dictionary mapping budget name → total hours value.
+    /// Reads existing "Budget pr. år" values from the Opsummering sheet of an existing XLSX file.
+    /// Returns a dictionary mapping category name → yearly budget hours.
     /// </summary>
-    private static Dictionary<string, double> ReadExistingOpsummeringTotalHours(string path)
+    private static Dictionary<string, double> ReadExistingOpsummeringYearlyBudgets(string path)
     {
         var result = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         if (!File.Exists(path)) return result;
@@ -515,93 +523,193 @@ public class ReportService
                 .FirstOrDefault(s => s.Name.Equals("Opsummering", StringComparison.OrdinalIgnoreCase));
             if (ws == null) return result;
 
-            // Find the "Total timer" column
+            var lastRow = ws.LastRowUsed()?.RowNumber() ?? 1;
             var lastCol = ws.LastColumnUsed()?.ColumnNumber() ?? 0;
-            int totalTimerCol = -1;
-            for (int col = 1; col <= lastCol; col++)
+            if (lastCol == 0) return result;
+
+            int headerRow = -1;
+            int categoryCol = -1;
+            int yearlyBudgetCol = -1;
+
+            for (int row = 1; row <= Math.Min(lastRow, 10); row++)
             {
-                var header = ws.Cell(1, col).GetString();
-                if (header.Equals("Total timer", StringComparison.OrdinalIgnoreCase))
+                int foundCategoryCol = -1;
+                int foundYearlyBudgetCol = -1;
+
+                for (int col = 1; col <= lastCol; col++)
                 {
-                    totalTimerCol = col;
+                    var header = ws.Cell(row, col).GetString();
+                    if (header.Equals("Kategori", StringComparison.OrdinalIgnoreCase))
+                        foundCategoryCol = col;
+                    else if (header.Equals("Budget pr. år", StringComparison.OrdinalIgnoreCase))
+                        foundYearlyBudgetCol = col;
+                }
+
+                if (foundCategoryCol > 0 && foundYearlyBudgetCol > 0)
+                {
+                    headerRow = row;
+                    categoryCol = foundCategoryCol;
+                    yearlyBudgetCol = foundYearlyBudgetCol;
                     break;
                 }
             }
 
-            if (totalTimerCol < 0) return result;
+            if (headerRow < 0) return result;
 
-            var lastRow = ws.LastRowUsed()?.RowNumber() ?? 1;
-            for (int row = 2; row <= lastRow; row++)
+            for (int row = headerRow + 1; row <= lastRow; row++)
             {
-                var budget = ws.Cell(row, 1).GetString();
-                if (string.IsNullOrWhiteSpace(budget)) continue;
-                var cell = ws.Cell(row, totalTimerCol);
-                if (cell.TryGetValue<double>(out var hours))
-                    result[budget] = hours;
+                var category = ws.Cell(row, categoryCol).GetString();
+                if (string.IsNullOrWhiteSpace(category)) break;
+                if (category.Equals("Uge", StringComparison.OrdinalIgnoreCase)) break;
+
+                var cell = ws.Cell(row, yearlyBudgetCol);
+                if (cell.TryGetValue<double>(out var yearlyBudget))
+                    result[category] = yearlyBudget;
             }
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Warning: Could not read existing Opsummering data: {ex.Message}");
+            Console.Error.WriteLine($"Warning: Could not read existing Opsummering yearly budget data: {ex.Message}");
         }
 
         return result;
     }
 
-    private static void WriteOpsummeringSheet(XLWorkbook workbook, List<ReportRow> allRows, List<Leverance> leverances, Dictionary<string, double> existingTotalHours)
+    private static (Dictionary<string, double> CategoryConsumedHours, Dictionary<int, Dictionary<string, double>> WeeklyCategoryConsumedHours)
+        BuildCategoryConsumption(List<TogglTimeEntry> entries, Dictionary<string, JiraIssue?> jiraIssues)
     {
-        var ws = workbook.Worksheets.Add("Opsummering");
-
-        // Build a lookup from fix version to leverance budget
         var versionToBudget = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var lev in leverances)
+        foreach (var issue in jiraIssues.Values)
         {
-            if (!string.IsNullOrEmpty(lev.Budget))
-                versionToBudget[lev.FixVersion] = lev.Budget;
+            if (issue == null) continue;
+            if (!issue.IssueType.Equals("Leverance", StringComparison.OrdinalIgnoreCase)) continue;
+            if (string.IsNullOrWhiteSpace(issue.Budget)) continue;
+
+            foreach (var version in issue.FixVersions)
+            {
+                if (!versionToBudget.ContainsKey(version))
+                    versionToBudget[version] = issue.Budget;
+            }
         }
 
-        // Resolve the effective budget for each row: use row budget, or inherit from leverance
-        string ResolveBudget(ReportRow row)
+        string ResolveCategory(JiraIssue? issue)
         {
-            if (!string.IsNullOrWhiteSpace(row.Budget))
-                return row.Budget;
-            var firstVersion = row.FixVersions.FirstOrDefault();
-            if (firstVersion != null && versionToBudget.TryGetValue(firstVersion, out var levBudget))
-                return levBudget;
+            if (!string.IsNullOrWhiteSpace(issue?.Budget))
+                return issue.Budget!;
+
+            var firstVersion = issue?.FixVersions.FirstOrDefault();
+            if (!string.IsNullOrWhiteSpace(firstVersion) && versionToBudget.TryGetValue(firstVersion, out var inheritedBudget))
+                return inheritedBudget;
+
             return "(Intet budget)";
         }
 
-        // Group by resolved budget
-        var byBudget = allRows
-            .GroupBy(r => ResolveBudget(r), StringComparer.OrdinalIgnoreCase)
-            .OrderBy(g => g.Key, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var categoryConsumedHours = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        var weeklyCategoryConsumedHours = new Dictionary<int, Dictionary<string, double>>();
 
-        // Headers
-        ws.Cell(1, 1).Value = "Budget";
-        ws.Cell(1, 2).Value = "Timer i periode";
-        ws.Cell(1, 3).Value = "Total timer";
-
-        // Bold headers
-        ws.Range(1, 1, 1, 3).Style.Font.Bold = true;
-
-        for (int i = 0; i < byBudget.Count; i++)
+        foreach (var entry in entries)
         {
-            var group = byBudget[i];
-            var row = i + 2;
-            var periodHours = group.Sum(r =>
-                double.TryParse(r.TimeUsedDecimal, NumberStyles.Float, CultureInfo.InvariantCulture, out var h) ? h : 0);
+            var jiraKey = ExtractJiraKey(entry.Description);
+            var issue = jiraKey != null && jiraIssues.TryGetValue(jiraKey, out var ji) ? ji : null;
+            var category = ResolveCategory(issue);
+            var hours = entry.Duration / 1000.0 / 3600.0;
 
-            ws.Cell(row, 1).Value = group.Key;
-            ws.Cell(row, 2).Value = Math.Round(periodHours, 2);
+            categoryConsumedHours.TryGetValue(category, out var currentCategoryHours);
+            categoryConsumedHours[category] = currentCategoryHours + hours;
 
-            // Preserve existing "Total timer" value if available; otherwise leave empty for manual entry
-            if (existingTotalHours.TryGetValue(group.Key, out var existingTotal))
-                ws.Cell(row, 3).Value = existingTotal;
+            var week = ISOWeek.GetWeekOfYear(entry.Start.Date);
+            if (!weeklyCategoryConsumedHours.TryGetValue(week, out var byCategory))
+            {
+                byCategory = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+                weeklyCategoryConsumedHours[week] = byCategory;
+            }
+
+            byCategory.TryGetValue(category, out var currentWeekCategoryHours);
+            byCategory[category] = currentWeekCategoryHours + hours;
         }
 
-        for (int col = 2; col <= 3; col++)
-            ws.Column(col).Style.NumberFormat.Format = "0.00";
+        return (categoryConsumedHours, weeklyCategoryConsumedHours);
+    }
+
+    private static void WriteOpsummeringSheet(
+        XLWorkbook workbook,
+        Dictionary<string, double> categoryConsumedHours,
+        Dictionary<int, Dictionary<string, double>> weeklyCategoryConsumedHours,
+        Dictionary<string, double> existingYearlyBudgets)
+    {
+        var ws = workbook.Worksheets.Add("Opsummering");
+
+        var categories = categoryConsumedHours.Keys
+            .Union(existingYearlyBudgets.Keys, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(c => c, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        if (categories.Count == 0)
+            categories.Add("(Intet budget)");
+
+        // Tabel 1
+        var table1Headers = new[] { "Kategori", "Budget pr. år", "Budget pr. måned", "Forbrugt", "Rest", "Rest pr. måned" };
+        for (int i = 0; i < table1Headers.Length; i++)
+            ws.Cell(1, i + 1).Value = table1Headers[i];
+
+        for (int i = 0; i < categories.Count; i++)
+        {
+            var row = i + 2;
+            var category = categories[i];
+            ws.Cell(row, 1).Value = category;
+
+            if (existingYearlyBudgets.TryGetValue(category, out var yearlyBudget))
+                ws.Cell(row, 2).Value = Math.Round(yearlyBudget, 2);
+
+            categoryConsumedHours.TryGetValue(category, out var consumedHours);
+            ws.Cell(row, 4).Value = Math.Round(consumedHours, 2);
+
+            ws.Cell(row, 3).FormulaA1 = $"IF(B{row}=\"\",\"\",B{row}/12)";
+            ws.Cell(row, 5).FormulaA1 = $"IF(B{row}=\"\",\"\",B{row}-D{row})";
+            ws.Cell(row, 6).FormulaA1 = $"IF(E{row}=\"\",\"\",E{row}/12)";
+        }
+
+        var table1LastRow = categories.Count + 1;
+        var table1 = ws.Range(1, 1, table1LastRow, table1Headers.Length).CreateTable("OpsummeringKategori");
+        table1.Theme = XLTableTheme.TableStyleMedium2;
+        ws.Range(2, 2, table1LastRow, 6).Style.NumberFormat.Format = "0.00";
+
+        // Tabel 2
+        var startRowTable2 = table1LastRow + 3;
+        ws.Cell(startRowTable2, 1).Value = "Uge";
+        for (int i = 0; i < categories.Count; i++)
+            ws.Cell(startRowTable2, i + 2).Value = categories[i];
+
+        var currentWeek = ISOWeek.GetWeekOfYear(DateTime.Today);
+        var maxWeek = Math.Max(currentWeek, weeklyCategoryConsumedHours.Count > 0 ? weeklyCategoryConsumedHours.Keys.Max() : 0);
+        if (maxWeek == 0) maxWeek = currentWeek;
+        var weeks = Enumerable.Range(1, maxWeek).ToList();
+
+        for (int i = 0; i < weeks.Count; i++)
+        {
+            var row = startRowTable2 + i + 1;
+            var week = weeks[i];
+            ws.Cell(row, 1).Value = week;
+
+            weeklyCategoryConsumedHours.TryGetValue(week, out var weekByCategory);
+            for (int c = 0; c < categories.Count; c++)
+            {
+                var category = categories[c];
+                var value = 0.0;
+                if (weekByCategory != null && weekByCategory.TryGetValue(category, out var weeklyHours))
+                    value = weeklyHours;
+                ws.Cell(row, c + 2).Value = Math.Round(value, 2);
+            }
+        }
+
+        var table2LastRow = startRowTable2 + weeks.Count;
+        var table2LastCol = categories.Count + 1;
+        var table2 = ws.Range(startRowTable2, 1, table2LastRow, table2LastCol).CreateTable("OpsummeringUgeforbrug");
+        table2.Theme = XLTableTheme.TableStyleMedium9;
+        if (table2LastCol >= 2)
+            ws.Range(startRowTable2 + 1, 2, table2LastRow, table2LastCol).Style.NumberFormat.Format = "0.00";
+
+        ws.Columns().AdjustToContents();
     }
 
     /// <summary>
