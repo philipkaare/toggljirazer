@@ -259,7 +259,8 @@ public partial class MainWindow : Window
         // Build the report
         using var jiraService = new JiraService(appConfig.Jira);
         var reportService = new ReportService(jiraService);
-        var (reportSheets, versionRows, leverances) = await reportService.BuildReportAsync(entries, allEntries);
+        var (reportSheets, versionRows, leverances, categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours) =
+            await reportService.BuildReportAsync(entries, allEntries);
 
         Console.WriteLine();
         Console.WriteLine($"Report contains {reportSheets.Sum(s => s.Rows.Count)} rows.");
@@ -272,7 +273,15 @@ public partial class MainWindow : Window
         if (format == "xlsx")
         {
             var extraColumns = reportService.ReadVersionReportExtraColumns(appConfig.Report.OutputFile);
-            reportService.WriteXlsx(reportSheets, versionRows, leverances, appConfig.Report.OutputFile, extraColumns);
+            reportService.WriteXlsx(
+                reportSheets,
+                versionRows,
+                leverances,
+                categoryConsumedHours,
+                weeklyCategoryConsumedHours,
+                monthlyCategoryConsumedHours,
+                appConfig.Report.OutputFile,
+                extraColumns);
         }
         else
         {
