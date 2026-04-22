@@ -259,7 +259,7 @@ public partial class MainWindow : Window
         // Build the report
         using var jiraService = new JiraService(appConfig.Jira);
         var reportService = new ReportService(jiraService);
-        var (reportSheets, versionRows, leverances, categoryConsumedHours, weeklyCategoryConsumedHours) =
+        var (reportSheets, versionRows, leverances, categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours) =
             await reportService.BuildReportAsync(entries, allEntries);
 
         Console.WriteLine();
@@ -279,6 +279,7 @@ public partial class MainWindow : Window
                 leverances,
                 categoryConsumedHours,
                 weeklyCategoryConsumedHours,
+                monthlyCategoryConsumedHours,
                 appConfig.Report.OutputFile,
                 extraColumns);
         }

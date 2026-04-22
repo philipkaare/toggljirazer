@@ -42,7 +42,8 @@ public class ReportService
         List<VersionReportRow> VersionRows,
         List<Leverance> Leverances,
         Dictionary<string, double> CategoryConsumedHours,
-        Dictionary<(int Year, int Week), Dictionary<string, double>> WeeklyCategoryConsumedHours)> BuildReportAsync(
+        Dictionary<(int Year, int Week), Dictionary<string, double>> WeeklyCategoryConsumedHours,
+        Dictionary<(int Year, int Month), Dictionary<string, double>> MonthlyCategoryConsumedHours)> BuildReportAsync(
         List<TogglTimeEntry> periodEntries,
         List<TogglTimeEntry> allEntries)
     {
@@ -90,8 +91,8 @@ public class ReportService
         var leverances = BuildLeverances(allTimeRows, jiraIssues);
         Console.WriteLine($"Built {leverances.Count} leverance(s).");
 
-        var (categoryConsumedHours, weeklyCategoryConsumedHours) = BuildCategoryConsumption(periodEntries, jiraIssues);
-        return (reportSheets, versionRows, leverances, categoryConsumedHours, weeklyCategoryConsumedHours);
+        var (categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours) = BuildCategoryConsumption(periodEntries, jiraIssues);
+        return (reportSheets, versionRows, leverances, categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours);
     }
 
     /// <summary>
@@ -437,6 +438,7 @@ public class ReportService
         List<Leverance> leverances,
         Dictionary<string, double> categoryConsumedHours,
         Dictionary<(int Year, int Week), Dictionary<string, double>> weeklyCategoryConsumedHours,
+        Dictionary<(int Year, int Month), Dictionary<string, double>> monthlyCategoryConsumedHours,
         string outputPath,
         Dictionary<string, Dictionary<string, string>>? extraColumns = null)
     {
@@ -500,7 +502,7 @@ public class ReportService
         versionSheet.Columns().AdjustToContents();
 
         // Opsummering sheet
-        WriteOpsummeringSheet(workbook, categoryConsumedHours, weeklyCategoryConsumedHours, existingYearlyBudgets);
+        WriteOpsummeringSheet(workbook, categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours, existingYearlyBudgets);
 
         // Plan sheet
         WritePlanSheet(workbook, leverances, existingPlanData);
@@ -577,7 +579,10 @@ public class ReportService
         return result;
     }
 
-    private static (Dictionary<string, double> CategoryConsumedHours, Dictionary<(int Year, int Week), Dictionary<string, double>> WeeklyCategoryConsumedHours)
+    private static (
+        Dictionary<string, double> CategoryConsumedHours,
+        Dictionary<(int Year, int Week), Dictionary<string, double>> WeeklyCategoryConsumedHours,
+        Dictionary<(int Year, int Month), Dictionary<string, double>> MonthlyCategoryConsumedHours)
         BuildCategoryConsumption(List<TogglTimeEntry> entries, Dictionary<string, JiraIssue?> jiraIssues)
     {
         var versionToBudget = BuildLeveranceBudgetByVersion(jiraIssues);
@@ -589,6 +594,7 @@ public class ReportService
 
         var categoryConsumedHours = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         var weeklyCategoryConsumedHours = new Dictionary<(int Year, int Week), Dictionary<string, double>>();
+        var monthlyCategoryConsumedHours = new Dictionary<(int Year, int Month), Dictionary<string, double>>();
 
         foreach (var entry in entries)
         {
@@ -611,9 +617,19 @@ public class ReportService
 
             byCategory.TryGetValue(category, out var currentWeekCategoryHours);
             byCategory[category] = currentWeekCategoryHours + hours;
+
+            var monthKey = (Year: entry.Start.Year, Month: entry.Start.Month);
+            if (!monthlyCategoryConsumedHours.TryGetValue(monthKey, out var byMonthCategory))
+            {
+                byMonthCategory = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+                monthlyCategoryConsumedHours[monthKey] = byMonthCategory;
+            }
+
+            byMonthCategory.TryGetValue(category, out var currentMonthCategoryHours);
+            byMonthCategory[category] = currentMonthCategoryHours + hours;
         }
 
-        return (categoryConsumedHours, weeklyCategoryConsumedHours);
+        return (categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours);
     }
 
     private static Dictionary<string, string> BuildLeveranceBudgetByVersion(Dictionary<string, JiraIssue?> jiraIssues)
@@ -654,6 +670,7 @@ public class ReportService
         XLWorkbook workbook,
         Dictionary<string, double> categoryConsumedHours,
         Dictionary<(int Year, int Week), Dictionary<string, double>> weeklyCategoryConsumedHours,
+        Dictionary<(int Year, int Month), Dictionary<string, double>> monthlyCategoryConsumedHours,
         Dictionary<string, double> existingYearlyBudgets)
     {
         var ws = workbook.Worksheets.Add("Opsummering");
@@ -728,6 +745,42 @@ public class ReportService
         table2.Theme = XLTableTheme.TableStyleMedium9;
         if (table2LastCol >= 2)
             ws.Range(startRowTable2 + 1, 2, table2LastRow, table2LastCol).Style.NumberFormat.Format = "0.00";
+
+        // Tabel 3
+        var startRowTable3 = table2LastRow + 3;
+        ws.Cell(startRowTable3, 1).Value = "Måned";
+        for (int i = 0; i < categories.Count; i++)
+            ws.Cell(startRowTable3, i + 2).Value = categories[i];
+
+        var months = monthlyCategoryConsumedHours.Keys
+            .OrderBy(m => m.Year)
+            .ThenBy(m => m.Month)
+            .ToList();
+        var monthsHasMultipleYears = months.Select(m => m.Year).Distinct().Skip(1).Any();
+
+        for (int i = 0; i < months.Count; i++)
+        {
+            var row = startRowTable3 + i + 1;
+            var month = months[i];
+            ws.Cell(row, 1).Value = monthsHasMultipleYears ? $"{month.Year}-{month.Month:D2}" : month.Month;
+
+            monthlyCategoryConsumedHours.TryGetValue(month, out var monthByCategory);
+            for (int c = 0; c < categories.Count; c++)
+            {
+                var category = categories[c];
+                var value = 0.0;
+                if (monthByCategory != null && monthByCategory.TryGetValue(category, out var monthlyHours))
+                    value = monthlyHours;
+                ws.Cell(row, c + 2).Value = Math.Round(value, 2);
+            }
+        }
+
+        var table3LastRow = startRowTable3 + months.Count;
+        var table3LastCol = categories.Count + 1;
+        var table3 = ws.Range(startRowTable3, 1, table3LastRow, table3LastCol).CreateTable("OpsummeringMaanedsforbrug");
+        table3.Theme = XLTableTheme.TableStyleMedium10;
+        if (table3LastCol >= 2)
+            ws.Range(startRowTable3 + 1, 2, table3LastRow, table3LastCol).Style.NumberFormat.Format = "0.00";
 
         ws.Columns().AdjustToContents();
     }
