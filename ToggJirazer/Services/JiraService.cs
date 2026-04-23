@@ -66,7 +66,7 @@ public class JiraService : IDisposable
     {
         await ResolveFieldIdsAsync();
 
-        var fieldsParam = "summary,issuetype,fixVersions,timeoriginalestimate";
+        var fieldsParam = "summary,issuetype,fixVersions,timeoriginalestimate,parent";
         if (_budgetFieldId != null) fieldsParam += $",{_budgetFieldId}";
         if (_accountFieldId != null) fieldsParam += $",{_accountFieldId}";
 
@@ -127,7 +127,8 @@ public class JiraService : IDisposable
                               .Where(n => !string.IsNullOrEmpty(n)).ToList() ?? new(),
             Estimate = issue.Fields?.TimeOriginalEstimate.HasValue == true
                 ? issue.Fields.TimeOriginalEstimate.Value / 3600.0
-                : null
+                : null,
+            ParentKey = issue.Fields?.Parent?.Key
         };
     }
 
@@ -155,7 +156,7 @@ public class JiraService : IDisposable
     {
         await ResolveFieldIdsAsync();
 
-        var fields = new List<string> { "summary", "issuetype", "fixVersions", "timeoriginalestimate" };
+        var fields = new List<string> { "summary", "issuetype", "fixVersions", "timeoriginalestimate", "parent" };
         if (_budgetFieldId != null) fields.Add(_budgetFieldId);
         if (_accountFieldId != null) fields.Add(_accountFieldId);
 
@@ -228,7 +229,8 @@ public class JiraService : IDisposable
                                           .Where(n => !string.IsNullOrEmpty(n)).ToList() ?? new(),
                         Estimate = issue.Fields?.TimeOriginalEstimate.HasValue == true
                             ? issue.Fields.TimeOriginalEstimate.Value / 3600.0
-                            : null
+                            : null,
+                        ParentKey = issue.Fields?.Parent?.Key
                     };
                 }
             }
@@ -254,6 +256,31 @@ public class JiraService : IDisposable
         foreach (var kv in errorStatus)
             Console.WriteLine($"  Warning: Jira issue '{kv.Key}' could not be fetched (status {kv.Value}).");
 
+        // Inherit fix versions from parent for issues that have none
+        var missingParentKeys = result.Values
+            .Where(i => i != null && i.FixVersions.Count == 0 && !string.IsNullOrEmpty(i.ParentKey))
+            .Select(i => i!.ParentKey!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(pk => !result.ContainsKey(pk))
+            .ToList();
+
+        if (missingParentKeys.Count > 0)
+        {
+            Console.WriteLine($"  Fetching {missingParentKeys.Count} parent issue(s) to inherit fix versions.");
+            var parentIssues = await GetIssuesBulkAsync(missingParentKeys);
+            foreach (var kv in parentIssues)
+                result.TryAdd(kv.Key, kv.Value);
+        }
+
+        foreach (var issue in result.Values.Where(i => i != null && i.FixVersions.Count == 0 && !string.IsNullOrEmpty(i.ParentKey)))
+        {
+            if (result.TryGetValue(issue!.ParentKey!, out var parentIssue) && parentIssue?.FixVersions.Count > 0)
+            {
+                Console.WriteLine($"  Issue '{issue.Key}' has no fix version; inheriting from parent '{issue.ParentKey}': {string.Join(", ", parentIssue.FixVersions)}");
+                issue.FixVersions = parentIssue.FixVersions.ToList();
+            }
+        }
+
         return result;
     }
 
@@ -275,8 +302,16 @@ public class JiraService : IDisposable
         [System.Text.Json.Serialization.JsonPropertyName("timeoriginalestimate")]
         public long? TimeOriginalEstimate { get; set; }
 
+        [System.Text.Json.Serialization.JsonPropertyName("parent")]
+        public JiraParentRef? Parent { get; set; }
+
         [System.Text.Json.Serialization.JsonExtensionData]
         public Dictionary<string, object?>? CustomFields { get; set; }
+    }
+
+    private sealed class JiraParentRef
+    {
+        public string? Key { get; set; }
     }
 
     private sealed class JiraVersionRef
