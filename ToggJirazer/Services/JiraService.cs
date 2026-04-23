@@ -116,7 +116,7 @@ public class JiraService : IDisposable
             ? ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(_accountFieldId))
             : null;
 
-        return new JiraIssue
+        var jiraIssue = new JiraIssue
         {
             Key = issue.Key ?? issueKey,
             IssueType = issue.Fields?.Issuetype?.Name ?? string.Empty,
@@ -130,6 +130,19 @@ public class JiraService : IDisposable
                 : null,
             ParentKey = issue.Fields?.Parent?.Key
         };
+
+        // Inherit fix versions from parent if the issue has none
+        if (jiraIssue.FixVersions.Count == 0 && !string.IsNullOrEmpty(jiraIssue.ParentKey))
+        {
+            var parentIssue = await GetIssueAsync(jiraIssue.ParentKey);
+            if (parentIssue?.FixVersions.Count > 0)
+            {
+                Console.WriteLine($"  Issue '{jiraIssue.Key}' has no fix version; inheriting from parent '{jiraIssue.ParentKey}': {string.Join(", ", parentIssue.FixVersions)}");
+                jiraIssue.FixVersions = parentIssue.FixVersions.ToList();
+            }
+        }
+
+        return jiraIssue;
     }
 
     private static string? ExtractStringField(object? field)
@@ -256,7 +269,9 @@ public class JiraService : IDisposable
         foreach (var kv in errorStatus)
             Console.WriteLine($"  Warning: Jira issue '{kv.Key}' could not be fetched (status {kv.Value}).");
 
-        // Inherit fix versions from parent for issues that have none
+        // Inherit fix versions from parent for issues that have none.
+        // Note: TotalEstimateSum in version reports is computed via JQL fixVersion="..", so only
+        // issues with a Jira-assigned fix version contribute to estimates; inherited children do not.
         var missingParentKeys = result.Values
             .Where(i => i != null && i.FixVersions.Count == 0 && !string.IsNullOrEmpty(i.ParentKey))
             .Select(i => i!.ParentKey!)
@@ -264,17 +279,20 @@ public class JiraService : IDisposable
             .Where(pk => !result.ContainsKey(pk))
             .ToList();
 
+        var parentIssues = new Dictionary<string, JiraIssue?>(StringComparer.OrdinalIgnoreCase);
         if (missingParentKeys.Count > 0)
         {
             Console.WriteLine($"  Fetching {missingParentKeys.Count} parent issue(s) to inherit fix versions.");
-            var parentIssues = await GetIssuesBulkAsync(missingParentKeys);
-            foreach (var kv in parentIssues)
-                result.TryAdd(kv.Key, kv.Value);
+            parentIssues = await GetIssuesBulkAsync(missingParentKeys);
         }
 
         foreach (var issue in result.Values.Where(i => i != null && i.FixVersions.Count == 0 && !string.IsNullOrEmpty(i.ParentKey)))
         {
-            if (result.TryGetValue(issue!.ParentKey!, out var parentIssue) && parentIssue?.FixVersions.Count > 0)
+            JiraIssue? parentIssue = null;
+            if (!result.TryGetValue(issue!.ParentKey!, out parentIssue))
+                parentIssues.TryGetValue(issue.ParentKey!, out parentIssue);
+
+            if (parentIssue?.FixVersions.Count > 0)
             {
                 Console.WriteLine($"  Issue '{issue.Key}' has no fix version; inheriting from parent '{issue.ParentKey}': {string.Join(", ", parentIssue.FixVersions)}");
                 issue.FixVersions = parentIssue.FixVersions.ToList();
