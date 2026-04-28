@@ -9,4 +9,5 @@ public class JiraIssue
     public string? Account { get; set; }
     public List<string> FixVersions { get; set; } = new();
     public double? Estimate { get; set; } // in hours
+    public string? ParentKey { get; set; }
 }
