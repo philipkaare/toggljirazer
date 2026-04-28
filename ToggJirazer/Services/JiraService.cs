@@ -66,6 +66,40 @@ public class JiraService : IDisposable
     {
         await ResolveFieldIdsAsync();
 
+        var jiraIssue = await FetchRawIssueAsync(issueKey);
+        if (jiraIssue == null) return null;
+
+        // Iteratively walk up the parent chain to inherit fix versions.
+        // A visited set prevents infinite loops from circular parent references.
+        if (jiraIssue.FixVersions.Count == 0 && !string.IsNullOrEmpty(jiraIssue.ParentKey))
+        {
+            var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { issueKey };
+            var current = jiraIssue;
+            while (current.FixVersions.Count == 0
+                   && !string.IsNullOrEmpty(current.ParentKey)
+                   && visited.Add(current.ParentKey))
+            {
+                var parent = await FetchRawIssueAsync(current.ParentKey);
+                if (parent == null) break;
+                if (parent.FixVersions.Count > 0)
+                {
+                    Console.WriteLine($"  Issue '{jiraIssue.Key}' has no fix version; inheriting from '{current.ParentKey}': {string.Join(", ", parent.FixVersions)}");
+                    jiraIssue.FixVersions = parent.FixVersions.ToList();
+                    break;
+                }
+                current = parent;
+            }
+        }
+
+        return jiraIssue;
+    }
+
+    /// <summary>
+    /// Fetches a single Jira issue from the API and parses it into a <see cref="JiraIssue"/>
+    /// without applying any parent-inheritance logic.
+    /// </summary>
+    private async Task<JiraIssue?> FetchRawIssueAsync(string issueKey)
+    {
         var fieldsParam = "summary,issuetype,fixVersions,timeoriginalestimate,parent";
         if (_budgetFieldId != null) fieldsParam += $",{_budgetFieldId}";
         if (_accountFieldId != null) fieldsParam += $",{_accountFieldId}";
@@ -116,7 +150,7 @@ public class JiraService : IDisposable
             ? ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(_accountFieldId))
             : null;
 
-        var jiraIssue = new JiraIssue
+        return new JiraIssue
         {
             Key = issue.Key ?? issueKey,
             IssueType = issue.Fields?.Issuetype?.Name ?? string.Empty,
@@ -130,19 +164,6 @@ public class JiraService : IDisposable
                 : null,
             ParentKey = issue.Fields?.Parent?.Key
         };
-
-        // Inherit fix versions from parent if the issue has none
-        if (jiraIssue.FixVersions.Count == 0 && !string.IsNullOrEmpty(jiraIssue.ParentKey))
-        {
-            var parentIssue = await GetIssueAsync(jiraIssue.ParentKey);
-            if (parentIssue?.FixVersions.Count > 0)
-            {
-                Console.WriteLine($"  Issue '{jiraIssue.Key}' has no fix version; inheriting from parent '{jiraIssue.ParentKey}': {string.Join(", ", parentIssue.FixVersions)}");
-                jiraIssue.FixVersions = parentIssue.FixVersions.ToList();
-            }
-        }
-
-        return jiraIssue;
     }
 
     private static string? ExtractStringField(object? field)
@@ -169,10 +190,6 @@ public class JiraService : IDisposable
     {
         await ResolveFieldIdsAsync();
 
-        var fields = new List<string> { "summary", "issuetype", "fixVersions", "timeoriginalestimate", "parent" };
-        if (_budgetFieldId != null) fields.Add(_budgetFieldId);
-        if (_accountFieldId != null) fields.Add(_accountFieldId);
-
         var result = new Dictionary<string, JiraIssue?>(StringComparer.OrdinalIgnoreCase);
         var errorStatus = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var keyList = issueKeys.ToList();
@@ -184,82 +201,7 @@ public class JiraService : IDisposable
         for (int i = 0; i < keyList.Count; i += batchSize)
         {
             var batch = keyList.Skip(i).Take(batchSize).ToList();
-            var requestBody = new JiraBulkFetchRequest { IssueIdsOrKeys = batch, Fields = fields };
-            var json = JsonSerializer.Serialize(requestBody, JsonOptions);
-            var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
-
-            HttpResponseMessage response;
-            try
-            {
-                response = await _httpClient.PostAsync("rest/api/3/issue/bulkfetch", content);
-            }
-            catch (Exception ex)
-            {
-                throw new InvalidOperationException(
-                    $"Failed to connect to Jira API: {ex.Message}. " +
-                    "Please check 'Jira:BaseUrl' in appsettings.json and your network connection.", ex);
-            }
-
-            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized ||
-                response.StatusCode == System.Net.HttpStatusCode.Forbidden)
-            {
-                throw new InvalidOperationException(
-                    "Jira authentication failed. Please verify 'Jira:UserEmail' and 'Jira:ApiToken' " +
-                    "in appsettings.json are correct.");
-            }
-
-            if (!response.IsSuccessStatusCode)
-            {
-                var error = await response.Content.ReadAsStringAsync();
-                throw new InvalidOperationException(
-                    $"Jira API returned {(int)response.StatusCode} for bulk fetch: {error}");
-            }
-
-            var responseJson = await response.Content.ReadAsStringAsync();
-            var bulkResponse = JsonSerializer.Deserialize<JiraBulkFetchResponse>(responseJson, JsonOptions);
-
-            if (bulkResponse?.Issues != null)
-            {
-                foreach (var issue in bulkResponse.Issues)
-                {
-                    if (issue.Key == null) continue;
-
-                    var budgetValue = _budgetFieldId != null
-                        ? ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(_budgetFieldId))
-                        : null;
-                    var accountValue = _accountFieldId != null
-                        ? ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(_accountFieldId))
-                        : null;
-
-                    result[issue.Key] = new JiraIssue
-                    {
-                        Key = issue.Key,
-                        IssueType = issue.Fields?.Issuetype?.Name ?? string.Empty,
-                        Summary = issue.Fields?.Summary ?? string.Empty,
-                        Budget = budgetValue,
-                        Account = accountValue,
-                        FixVersions = issue.Fields?.FixVersions?.Select(v => v.Name ?? string.Empty)
-                                          .Where(n => !string.IsNullOrEmpty(n)).ToList() ?? new(),
-                        Estimate = issue.Fields?.TimeOriginalEstimate.HasValue == true
-                            ? issue.Fields.TimeOriginalEstimate.Value / 3600.0
-                            : null,
-                        ParentKey = issue.Fields?.Parent?.Key
-                    };
-                }
-            }
-
-            if (bulkResponse?.Errors != null)
-            {
-                foreach (var err in bulkResponse.Errors)
-                {
-                    if (err.IssueKey != null)
-                    {
-                        result[err.IssueKey] = null;
-                        errorStatus[err.IssueKey] = err.Status;
-                    }
-                }
-            }
-
+            await FetchRawIssuesBulkAsync(batch, result, errorStatus);
             fetched += batch.Count;
             PrintProgressBar(fetched, keyList.Count);
         }
@@ -269,37 +211,157 @@ public class JiraService : IDisposable
         foreach (var kv in errorStatus)
             Console.WriteLine($"  Warning: Jira issue '{kv.Key}' could not be fetched (status {kv.Value}).");
 
-        // Inherit fix versions from parent for issues that have none.
+        // Iteratively resolve the full parent chain for fix version inheritance.
+        // Uses a visited set to prevent re-fetching and guard against circular references.
         // Note: TotalEstimateSum in version reports is computed via JQL fixVersion="..", so only
         // issues with a Jira-assigned fix version contribute to estimates; inherited children do not.
-        var missingParentKeys = result.Values
+        var parentCache = new Dictionary<string, JiraIssue?>(StringComparer.OrdinalIgnoreCase);
+        var visitedParentKeys = new HashSet<string>(result.Keys, StringComparer.OrdinalIgnoreCase);
+
+        var pendingParentKeys = result.Values
             .Where(i => i != null && i.FixVersions.Count == 0 && !string.IsNullOrEmpty(i.ParentKey))
             .Select(i => i!.ParentKey!)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Where(pk => !result.ContainsKey(pk))
+            .Where(pk => !visitedParentKeys.Contains(pk))
             .ToList();
 
-        var parentIssues = new Dictionary<string, JiraIssue?>(StringComparer.OrdinalIgnoreCase);
-        if (missingParentKeys.Count > 0)
+        while (pendingParentKeys.Count > 0)
         {
-            Console.WriteLine($"  Fetching {missingParentKeys.Count} parent issue(s) to inherit fix versions.");
-            parentIssues = await GetIssuesBulkAsync(missingParentKeys);
+            Console.WriteLine($"  Fetching {pendingParentKeys.Count} parent issue(s) to inherit fix versions.");
+            var batchParents = new Dictionary<string, JiraIssue?>(StringComparer.OrdinalIgnoreCase);
+            var parentErrors = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            await FetchRawIssuesBulkAsync(pendingParentKeys, batchParents, parentErrors);
+            foreach (var kv in parentErrors)
+                Console.WriteLine($"  Warning: Parent issue '{kv.Key}' could not be fetched (status {kv.Value}); fix version will not be inherited.");
+
+            foreach (var kv in batchParents)
+                parentCache[kv.Key] = kv.Value;
+            foreach (var key in pendingParentKeys)
+                visitedParentKeys.Add(key);
+
+            // Discover the next level of parents that still need to be resolved
+            pendingParentKeys = batchParents.Values
+                .Where(i => i != null && i.FixVersions.Count == 0 && !string.IsNullOrEmpty(i.ParentKey))
+                .Select(i => i!.ParentKey!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(pk => !visitedParentKeys.Contains(pk))
+                .ToList();
         }
 
+        // Walk the parent chain for each issue that still has no fix version and apply inheritance
         foreach (var issue in result.Values.Where(i => i != null && i.FixVersions.Count == 0 && !string.IsNullOrEmpty(i.ParentKey)))
         {
-            JiraIssue? parentIssue = null;
-            if (!result.TryGetValue(issue!.ParentKey!, out parentIssue))
-                parentIssues.TryGetValue(issue.ParentKey!, out parentIssue);
-
-            if (parentIssue?.FixVersions.Count > 0)
+            var walked = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { issue!.Key };
+            var current = issue;
+            while (!string.IsNullOrEmpty(current.ParentKey) && walked.Add(current.ParentKey))
             {
-                Console.WriteLine($"  Issue '{issue.Key}' has no fix version; inheriting from parent '{issue.ParentKey}': {string.Join(", ", parentIssue.FixVersions)}");
-                issue.FixVersions = parentIssue.FixVersions.ToList();
+                JiraIssue? parent;
+                if (!result.TryGetValue(current.ParentKey, out parent))
+                    parentCache.TryGetValue(current.ParentKey, out parent);
+                if (parent == null) break;
+                if (parent.FixVersions.Count > 0)
+                {
+                    Console.WriteLine($"  Issue '{issue.Key}' has no fix version; inheriting from '{current.ParentKey}': {string.Join(", ", parent.FixVersions)}");
+                    issue.FixVersions = parent.FixVersions.ToList();
+                    break;
+                }
+                current = parent;
             }
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Fetches issues in bulk from the Jira API and adds the parsed results to <paramref name="target"/>.
+    /// No parent-inheritance logic is applied. Errors are recorded in <paramref name="errorStatus"/>
+    /// when provided; otherwise they are silently stored as <c>null</c> entries.
+    /// </summary>
+    private async Task FetchRawIssuesBulkAsync(
+        IEnumerable<string> issueKeys,
+        Dictionary<string, JiraIssue?> target,
+        Dictionary<string, int>? errorStatus)
+    {
+        var fields = new List<string> { "summary", "issuetype", "fixVersions", "timeoriginalestimate", "parent" };
+        if (_budgetFieldId != null) fields.Add(_budgetFieldId);
+        if (_accountFieldId != null) fields.Add(_accountFieldId);
+
+        var requestBody = new JiraBulkFetchRequest { IssueIdsOrKeys = issueKeys.ToList(), Fields = fields };
+        var json = JsonSerializer.Serialize(requestBody, JsonOptions);
+        var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _httpClient.PostAsync("rest/api/3/issue/bulkfetch", content);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(
+                $"Failed to connect to Jira API: {ex.Message}. " +
+                "Please check 'Jira:BaseUrl' in appsettings.json and your network connection.", ex);
+        }
+
+        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized ||
+            response.StatusCode == System.Net.HttpStatusCode.Forbidden)
+        {
+            throw new InvalidOperationException(
+                "Jira authentication failed. Please verify 'Jira:UserEmail' and 'Jira:ApiToken' " +
+                "in appsettings.json are correct.");
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            var error = await response.Content.ReadAsStringAsync();
+            throw new InvalidOperationException(
+                $"Jira API returned {(int)response.StatusCode} for bulk fetch: {error}");
+        }
+
+        var responseJson = await response.Content.ReadAsStringAsync();
+        var bulkResponse = JsonSerializer.Deserialize<JiraBulkFetchResponse>(responseJson, JsonOptions);
+
+        if (bulkResponse?.Issues != null)
+        {
+            foreach (var issue in bulkResponse.Issues)
+            {
+                if (issue.Key == null) continue;
+
+                var budgetValue = _budgetFieldId != null
+                    ? ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(_budgetFieldId))
+                    : null;
+                var accountValue = _accountFieldId != null
+                    ? ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(_accountFieldId))
+                    : null;
+
+                target[issue.Key] = new JiraIssue
+                {
+                    Key = issue.Key,
+                    IssueType = issue.Fields?.Issuetype?.Name ?? string.Empty,
+                    Summary = issue.Fields?.Summary ?? string.Empty,
+                    Budget = budgetValue,
+                    Account = accountValue,
+                    FixVersions = issue.Fields?.FixVersions?.Select(v => v.Name ?? string.Empty)
+                                      .Where(n => !string.IsNullOrEmpty(n)).ToList() ?? new(),
+                    Estimate = issue.Fields?.TimeOriginalEstimate.HasValue == true
+                        ? issue.Fields.TimeOriginalEstimate.Value / 3600.0
+                        : null,
+                    ParentKey = issue.Fields?.Parent?.Key
+                };
+            }
+        }
+
+        if (bulkResponse?.Errors != null)
+        {
+            foreach (var err in bulkResponse.Errors)
+            {
+                if (err.IssueKey != null)
+                {
+                    target[err.IssueKey] = null;
+                    if (errorStatus != null)
+                        errorStatus[err.IssueKey] = err.Status;
+                }
+            }
+        }
     }
 
     // Internal response models
