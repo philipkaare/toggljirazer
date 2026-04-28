@@ -443,10 +443,8 @@ public class ReportService
         Dictionary<string, Dictionary<string, string>>? extraColumns = null)
     {
         // Read existing data before creating new workbook
-        var existingTotalHours = ReadExistingOpsummeringTotalHours(outputPath);
         var (existingWeekData, extraPlanHeaders, extraPlanData) = ReadExistingPlanData(outputPath);
         var existingYearlyBudgets = ReadExistingOpsummeringYearlyBudgets(outputPath);
-        var existingPlanData = ReadExistingPlanData(outputPath);
 
         using var workbook = new XLWorkbook();
 
