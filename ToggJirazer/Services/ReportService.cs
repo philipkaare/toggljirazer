@@ -226,13 +226,13 @@ public class ReportService
         Dictionary<string, JiraIssue?> jiraIssues,
         HashSet<string> releasedVersions)
     {
-        // Collect fix versions referenced by jira issues linked from toggl,
-        // excluding released versions and versions whose name contains "p-plads"
+        // Collect all fix versions referenced by jira issues linked from toggl.
+        // Released and "p-plads" versions are intentionally kept here — the version
+        // report is retrospective and should include completed versions.
         var fixVersionSet = jiraIssues.Values
             .Where(i => i != null)
             .SelectMany(i => i!.FixVersions)
             .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Where(v => !releasedVersions.Contains(v) && !v.Contains("p-plads", StringComparison.OrdinalIgnoreCase))
             .OrderBy(v => v)
             .ToList();
 
