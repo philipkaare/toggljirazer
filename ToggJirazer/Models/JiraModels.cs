@@ -8,6 +8,7 @@ public class JiraIssue
     public string? Budget { get; set; }
     public string? Account { get; set; }
     public List<string> FixVersions { get; set; } = new();
+    public HashSet<string> ReleasedFixVersionNames { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public double? Estimate { get; set; } // in hours
     public string? ParentKey { get; set; }
 }
