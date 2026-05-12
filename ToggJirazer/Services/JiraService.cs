@@ -159,6 +159,10 @@ public class JiraService : IDisposable
             Account = accountValue,
             FixVersions = issue.Fields?.FixVersions?.Select(v => v.Name ?? string.Empty)
                               .Where(n => !string.IsNullOrEmpty(n)).ToList() ?? new(),
+            ReleasedFixVersionNames = new HashSet<string>(
+                issue.Fields?.FixVersions?.Where(v => v.Released && !string.IsNullOrEmpty(v.Name))
+                    .Select(v => v.Name!) ?? Enumerable.Empty<string>(),
+                StringComparer.OrdinalIgnoreCase),
             Estimate = issue.Fields?.TimeOriginalEstimate.HasValue == true
                 ? issue.Fields.TimeOriginalEstimate.Value / 3600.0
                 : null,
@@ -342,6 +346,10 @@ public class JiraService : IDisposable
                     Account = accountValue,
                     FixVersions = issue.Fields?.FixVersions?.Select(v => v.Name ?? string.Empty)
                                       .Where(n => !string.IsNullOrEmpty(n)).ToList() ?? new(),
+                    ReleasedFixVersionNames = new HashSet<string>(
+                        issue.Fields?.FixVersions?.Where(v => v.Released && !string.IsNullOrEmpty(v.Name))
+                            .Select(v => v.Name!) ?? Enumerable.Empty<string>(),
+                        StringComparer.OrdinalIgnoreCase),
                     Estimate = issue.Fields?.TimeOriginalEstimate.HasValue == true
                         ? issue.Fields.TimeOriginalEstimate.Value / 3600.0
                         : null,
@@ -397,6 +405,7 @@ public class JiraService : IDisposable
     private sealed class JiraVersionRef
     {
         public string? Name { get; set; }
+        public bool Released { get; set; }
     }
 
     private sealed class JiraIssueType
