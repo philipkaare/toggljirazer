@@ -107,7 +107,7 @@ public class ReportService
         {
             var issue = kv.Value;
             if (issue == null) continue;
-            if (!issue.IssueType.Equals("Leverance", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!issue.IssueType.Equals("Delivery", StringComparison.OrdinalIgnoreCase)) continue;
             foreach (var fv in issue.FixVersions)
             {
                 if (!leveranceVersions.ContainsKey(fv))
@@ -638,7 +638,7 @@ public class ReportService
         foreach (var issue in jiraIssues.Values)
         {
             if (issue == null) continue;
-            if (!issue.IssueType.Equals("Leverance", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!issue.IssueType.Equals("Delivery", StringComparison.OrdinalIgnoreCase)) continue;
             if (string.IsNullOrWhiteSpace(issue.Budget)) continue;
 
             foreach (var version in (issue.FixVersions ?? new List<string>()).Where(v => !string.IsNullOrWhiteSpace(v)))
@@ -882,7 +882,7 @@ public class ReportService
             .ToHashSet();
 
         // Build week list: start from week 1, go through at least current week
-        int maxWeek = Math.Max(currentWeek, existingWeeks.Count > 0 ? existingWeeks.Max() : 0);
+        int maxWeek = (Math.Max(currentWeek, existingWeeks.Count > 0 ? existingWeeks.Max() : 0) + 2) % 52 + 1;
 
         var weeks = Enumerable.Range(1, maxWeek).ToList();
 
