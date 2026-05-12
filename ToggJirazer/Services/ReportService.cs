@@ -83,12 +83,21 @@ public class ReportService
                 .ToList();
         }
 
+        // Collect released fix version names across all fetched issues
+        var releasedVersions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var issue in jiraIssues.Values)
+        {
+            if (issue == null) continue;
+            foreach (var name in issue.ReleasedFixVersionNames)
+                releasedVersions.Add(name);
+        }
+
         // Build version report rows
-        var versionRows = await BuildVersionRowsAsync(periodEntries, allEntries, jiraIssues);
+        var versionRows = await BuildVersionRowsAsync(periodEntries, allEntries, jiraIssues, releasedVersions);
 
         // Build leverances from all-time rows
         var allTimeRows = BuildRowsFromEntries(allEntries, jiraIssues);
-        var leverances = BuildLeverances(allTimeRows, jiraIssues);
+        var leverances = BuildLeverances(allTimeRows, jiraIssues, releasedVersions);
         Console.WriteLine($"Built {leverances.Count} leverance(s).");
 
         var (categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours) = BuildCategoryConsumption(periodEntries, jiraIssues);
@@ -99,9 +108,10 @@ public class ReportService
     /// Builds leverance groupings. A leverance is anchored by tasks of type "Leverance".
     /// All tasks that share the same first fix version are grouped under that leverance.
     /// </summary>
-    private static List<Leverance> BuildLeverances(List<ReportRow> allRows, Dictionary<string, JiraIssue?> jiraIssues)
+    private static List<Leverance> BuildLeverances(List<ReportRow> allRows, Dictionary<string, JiraIssue?> jiraIssues, HashSet<string> releasedVersions)
     {
-        // Find all fix versions that have an anchor issue of type "Leverance"
+        // Find all fix versions that have an anchor issue of type "Leverance",
+        // excluding released versions and versions whose name contains "p-plads"
         var leveranceVersions = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
         foreach (var kv in jiraIssues)
         {
@@ -110,15 +120,19 @@ public class ReportService
             if (!issue.IssueType.Equals("Leverance", StringComparison.OrdinalIgnoreCase)) continue;
             foreach (var fv in issue.FixVersions)
             {
+                if (releasedVersions.Contains(fv)) continue;
+                if (fv.Contains("p-plads", StringComparison.OrdinalIgnoreCase)) continue;
                 if (!leveranceVersions.ContainsKey(fv))
                     leveranceVersions[fv] = issue.Budget;
             }
         }
 
-        // Group all rows by their first fix version
+        // Group all rows by their first fix version,
+        // excluding support-type rows which belong to the dedicated support leverance
         var rowsByVersion = new Dictionary<string, List<ReportRow>>(StringComparer.OrdinalIgnoreCase);
         foreach (var row in allRows)
         {
+            if (row.IssueType.Equals("Support", StringComparison.OrdinalIgnoreCase)) continue;
             var firstVersion = row.FixVersions.FirstOrDefault();
             if (string.IsNullOrEmpty(firstVersion)) continue;
             if (!leveranceVersions.ContainsKey(firstVersion)) continue;
@@ -144,6 +158,18 @@ public class ReportService
         }
 
         leverances.Sort((a, b) => string.Compare(a.FixVersion, b.FixVersion, StringComparison.OrdinalIgnoreCase));
+
+        // Add "support" leverance at the top, containing all support-type issue rows
+        var supportRows = allRows
+            .Where(r => r.IssueType.Equals("Support", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        leverances.Insert(0, new Leverance
+        {
+            FixVersion = "support",
+            Budget = "support",
+            Issues = supportRows
+        });
+
         return leverances;
     }
 
@@ -197,13 +223,16 @@ public class ReportService
     private async Task<List<VersionReportRow>> BuildVersionRowsAsync(
         List<TogglTimeEntry> periodEntries,
         List<TogglTimeEntry> allEntries,
-        Dictionary<string, JiraIssue?> jiraIssues)
+        Dictionary<string, JiraIssue?> jiraIssues,
+        HashSet<string> releasedVersions)
     {
-        // Collect fix versions referenced by jira issues linked from toggl
+        // Collect fix versions referenced by jira issues linked from toggl,
+        // excluding released versions and versions whose name contains "p-plads"
         var fixVersionSet = jiraIssues.Values
             .Where(i => i != null)
             .SelectMany(i => i!.FixVersions)
             .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(v => !releasedVersions.Contains(v) && !v.Contains("p-plads", StringComparison.OrdinalIgnoreCase))
             .OrderBy(v => v)
             .ToList();
 
@@ -656,6 +685,9 @@ public class ReportService
         Dictionary<string, string> versionToBudget,
         string fallbackWhenMissing)
     {
+        if (issue?.IssueType.Equals("Support", StringComparison.OrdinalIgnoreCase) == true)
+            return "support";
+
         var firstVersion = issue?.FixVersions.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
         if (!string.IsNullOrWhiteSpace(firstVersion) && versionToBudget.TryGetValue(firstVersion, out var overriddenBudget))
             return overriddenBudget;
