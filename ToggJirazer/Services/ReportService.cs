@@ -734,7 +734,7 @@ public class ReportService
 
             ws.Cell(row, 3).FormulaA1 = $"IF(B{row}=\"\",\"\",B{row}/12)";
             ws.Cell(row, 5).FormulaA1 = $"IF(B{row}=\"\",\"\",B{row}-D{row})";
-            ws.Cell(row, 6).FormulaA1 = $"IF(E{row}=\"\",\"\",E{row}/12)";
+            ws.Cell(row, 6).FormulaA1 = $"IF(E{row}=\"\",\"\",E{row}/(13-MONTH(TODAY())))";
         }
 
         var table1LastRow = categories.Count + 1;
