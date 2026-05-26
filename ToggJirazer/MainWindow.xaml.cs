@@ -11,6 +11,7 @@ public partial class MainWindow : Window
 {
     private readonly SettingsService _settingsService;
     private bool _isRunning;
+    private string? _lastOutputPath;
 
     private static readonly string SettingsPath =
         Path.Combine(AppContext.BaseDirectory, "appsettings.json");
@@ -187,6 +188,8 @@ public partial class MainWindow : Window
             AppendLog("Done.");
             ProgressBar.IsIndeterminate = false;
             ProgressBar.Value = 100;
+            _lastOutputPath = ReadConfigFromUi().Report.OutputFile;
+            OpenReportButton.IsEnabled = File.Exists(_lastOutputPath);
         }
         catch (Exception ex)
         {
@@ -203,6 +206,28 @@ public partial class MainWindow : Window
             RunButton.IsEnabled = true;
             SaveButton.IsEnabled = true;
             _isRunning = false;
+        }
+    }
+
+    private void OpenReport_Click(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_lastOutputPath) || !File.Exists(_lastOutputPath))
+        {
+            AppendLog("[ERROR] Report file not found.");
+            return;
+        }
+
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = _lastOutputPath,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"[ERROR] Could not open report: {ex.Message}");
         }
     }
 

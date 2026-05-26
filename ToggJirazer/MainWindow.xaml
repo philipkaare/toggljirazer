@@ -133,6 +133,7 @@
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
             <Grid.RowDefinitions>
@@ -144,10 +145,13 @@
                     Content="Save Settings" Margin="0,0,8,0"
                     Click="SaveSettings_Click"/>
             <Button Grid.Row="0" Grid.Column="1" x:Name="RunButton"
-                    Content="Generate Report"
+                    Content="Generate Report" Margin="0,0,8,0"
                     Click="RunButton_Click"/>
+            <Button Grid.Row="0" Grid.Column="2" x:Name="OpenReportButton"
+                    Content="Open in Excel" IsEnabled="False"
+                    Click="OpenReport_Click"/>
 
-            <ProgressBar Grid.Row="1" Grid.ColumnSpan="3"
+            <ProgressBar Grid.Row="1" Grid.ColumnSpan="4"
                          x:Name="ProgressBar"
                          Height="20" Margin="0,8,0,0"
                          Minimum="0" Maximum="100" Value="0"/>
