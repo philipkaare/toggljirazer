@@ -19,10 +19,10 @@ public class JiraService : IDisposable
         PropertyNameCaseInsensitive = true
     };
 
-    public JiraService(JiraConfig config)
+    public JiraService(JiraConfig config, HttpResponseCache? cache = null)
     {
         _config = config;
-        _httpClient = new HttpClient();
+        _httpClient = new HttpClient(cache?.CreateHandler() ?? (HttpMessageHandler)new HttpClientHandler());
         var credentials = Convert.ToBase64String(
             Encoding.ASCII.GetBytes($"{config.UserEmail}:{config.ApiToken}"));
         _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", credentials);

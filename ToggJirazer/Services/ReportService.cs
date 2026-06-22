@@ -9,6 +9,13 @@ namespace ToggJirazer.Services;
 
 public class ReportService
 {
+    /// <summary>
+    /// The category label used in the Opsummering sheet for time that resolves to no budget.
+    /// The dedicated "Intet budget" sheet must contain exactly the entries counted under this
+    /// category so the hours on both sheets agree.
+    /// </summary>
+    private const string NoBudgetCategory = "(Intet budget)";
+
     private static readonly string[] StandardVersionHeaders =
     [
         "Version",
@@ -43,7 +50,8 @@ public class ReportService
         List<Leverance> Leverances,
         Dictionary<string, double> CategoryConsumedHours,
         Dictionary<(int Year, int Week), Dictionary<string, double>> WeeklyCategoryConsumedHours,
-        Dictionary<(int Year, int Month), Dictionary<string, double>> MonthlyCategoryConsumedHours)> BuildReportAsync(
+        Dictionary<(int Year, int Month), Dictionary<string, double>> MonthlyCategoryConsumedHours,
+        List<ReportRow> NoBudgetRows)> BuildReportAsync(
         List<TogglTimeEntry> periodEntries,
         List<TogglTimeEntry> allEntries)
     {
@@ -100,8 +108,15 @@ public class ReportService
         var leverances = BuildLeverances(allTimeRows, jiraIssues, releasedVersions);
         Console.WriteLine($"Built {leverances.Count} leverance(s).");
 
-        var (categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours) = BuildCategoryConsumption(periodEntries, jiraIssues);
-        return (reportSheets, versionRows, leverances, categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours);
+        var (categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours, noBudgetEntries) =
+            BuildCategoryConsumption(periodEntries, jiraIssues);
+
+        // The no-budget entries are captured during the same pass that tallies the
+        // "(Intet budget)" category, so the dedicated sheet reflects exactly those entries —
+        // including time entries that have no (resolvable) Jira key, which the summary also counts.
+        var noBudgetRows = BuildNoBudgetRows(noBudgetEntries, jiraIssues);
+
+        return (reportSheets, versionRows, leverances, categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours, noBudgetRows);
     }
 
     /// <summary>
@@ -469,7 +484,8 @@ public class ReportService
         Dictionary<(int Year, int Week), Dictionary<string, double>> weeklyCategoryConsumedHours,
         Dictionary<(int Year, int Month), Dictionary<string, double>> monthlyCategoryConsumedHours,
         string outputPath,
-        Dictionary<string, Dictionary<string, string>>? extraColumns = null)
+        Dictionary<string, Dictionary<string, string>>? extraColumns = null,
+        List<ReportRow>? noBudgetRows = null)
     {
         // Read existing data before creating new workbook
         var (existingWeekData, extraPlanHeaders, extraPlanData) = ReadExistingPlanData(outputPath);
@@ -532,6 +548,11 @@ public class ReportService
 
         // Opsummering sheet
         WriteOpsummeringSheet(workbook, categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours, existingYearlyBudgets);
+
+        // Intet budget sheet — only when there are tasks worked on without a budget,
+        // so they can be located and fixed in Jira.
+        if (noBudgetRows is { Count: > 0 })
+            WriteReportSheet(workbook, "Intet budget", noBudgetRows);
 
         // Plan sheet
         WritePlanSheet(workbook, leverances, existingWeekData, extraPlanHeaders, extraPlanData);
@@ -611,19 +632,21 @@ public class ReportService
     private static (
         Dictionary<string, double> CategoryConsumedHours,
         Dictionary<(int Year, int Week), Dictionary<string, double>> WeeklyCategoryConsumedHours,
-        Dictionary<(int Year, int Month), Dictionary<string, double>> MonthlyCategoryConsumedHours)
+        Dictionary<(int Year, int Month), Dictionary<string, double>> MonthlyCategoryConsumedHours,
+        List<TogglTimeEntry> NoBudgetEntries)
         BuildCategoryConsumption(List<TogglTimeEntry> entries, Dictionary<string, JiraIssue?> jiraIssues)
     {
         var versionToBudget = BuildLeveranceBudgetByVersion(jiraIssues);
 
         string ResolveCategory(JiraIssue? issue)
         {
-            return ResolveIssueBudget(issue, versionToBudget, "(Intet budget)");
+            return ResolveIssueBudget(issue, versionToBudget, NoBudgetCategory);
         }
 
         var categoryConsumedHours = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
         var weeklyCategoryConsumedHours = new Dictionary<(int Year, int Week), Dictionary<string, double>>();
         var monthlyCategoryConsumedHours = new Dictionary<(int Year, int Month), Dictionary<string, double>>();
+        var noBudgetEntries = new List<TogglTimeEntry>();
 
         foreach (var entry in entries)
         {
@@ -631,6 +654,11 @@ public class ReportService
             var issue = jiraKey != null && jiraIssues.TryGetValue(jiraKey, out var ji) ? ji : null;
             var category = ResolveCategory(issue);
             var hours = entry.Duration / 1000.0 / 3600.0;
+
+            // Capture the entry as soon as it is identified as no-budget so the dedicated
+            // sheet cannot drift from the category total.
+            if (string.Equals(category, NoBudgetCategory, StringComparison.OrdinalIgnoreCase))
+                noBudgetEntries.Add(entry);
 
             categoryConsumedHours.TryGetValue(category, out var currentCategoryHours);
             categoryConsumedHours[category] = currentCategoryHours + hours;
@@ -658,7 +686,63 @@ public class ReportService
             byMonthCategory[category] = currentMonthCategoryHours + hours;
         }
 
-        return (categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours);
+        return (categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours, noBudgetEntries);
+    }
+
+    /// <summary>
+    /// Builds report rows for the entries that were identified as having no budget. Unlike
+    /// <see cref="BuildRowsFromEntries"/>, entries without a resolvable Jira key are kept and
+    /// grouped by their Toggl description, so every no-budget hour counted in the summary is
+    /// represented here.
+    /// </summary>
+    private static List<ReportRow> BuildNoBudgetRows(
+        List<TogglTimeEntry> entries,
+        Dictionary<string, JiraIssue?> jiraIssues)
+    {
+        var groups = entries
+            .Select(e => new { Entry = e, Key = ExtractJiraKey(e.Description) })
+            .GroupBy(x => new
+            {
+                // Keyed entries group by Jira key; keyless ones group by their description.
+                GroupKey = x.Key ?? $" {x.Entry.Description}",
+                x.Entry.User,
+                x.Entry.Email
+            });
+
+        var rows = new List<ReportRow>();
+        foreach (var group in groups)
+        {
+            var jiraKey = group.First().Key;
+            var issue = jiraKey != null && jiraIssues.TryGetValue(jiraKey, out var ji) ? ji : null;
+
+            var totalMs = group.Sum(x => x.Entry.Duration);
+            var totalSeconds = totalMs / 1000;
+            var timeSpan = TimeSpan.FromSeconds(totalSeconds);
+
+            var startDate = group.Min(x => x.Entry.Start).ToString("yyyy-MM-dd");
+
+            rows.Add(new ReportRow
+            {
+                IssueType = issue?.IssueType ?? string.Empty,
+                Key = jiraKey ?? string.Empty,
+                Summary = issue?.Summary ?? group.First().Entry.Description,
+                Budget = string.Empty,
+                Account = issue?.Account ?? string.Empty,
+                Person = group.Key.User,
+                StartDate = startDate,
+                TimeUsedHHMM = $"{(int)timeSpan.TotalHours:D2}:{timeSpan.Minutes:D2}",
+                TimeUsedDecimal = Math.Round(timeSpan.TotalHours, 2).ToString("F2", CultureInfo.InvariantCulture),
+                FixVersions = issue?.FixVersions ?? new List<string>()
+            });
+        }
+
+        rows.Sort((a, b) =>
+        {
+            int cmp = string.Compare(a.Key, b.Key, StringComparison.OrdinalIgnoreCase);
+            return cmp != 0 ? cmp : string.Compare(a.Person, b.Person, StringComparison.OrdinalIgnoreCase);
+        });
+
+        return rows;
     }
 
     private static Dictionary<string, string> BuildLeveranceBudgetByVersion(Dictionary<string, JiraIssue?> jiraIssues)
@@ -713,7 +797,7 @@ public class ReportService
             .ToList();
 
         if (categories.Count == 0)
-            categories.Add("(Intet budget)");
+            categories.Add(NoBudgetCategory);
 
         // Tabel 1
         var table1Headers = new[] { "Kategori", "Budget pr. år", "Budget pr. måned", "Forbrugt", "Rest", "Rest pr. måned" };

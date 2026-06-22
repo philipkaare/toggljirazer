@@ -151,6 +151,11 @@
                     Content="Open in Excel" IsEnabled="False"
                     Click="OpenReport_Click"/>
 
+            <CheckBox Grid.Row="0" Grid.Column="3" x:Name="EnableCacheCheckBox"
+                      Content="Cache requests (1 day)" IsChecked="True"
+                      VerticalAlignment="Center" HorizontalAlignment="Right"
+                      ToolTip="Reuse previously fetched Toggl/Jira data for up to 1 day instead of requesting it again."/>
+
             <ProgressBar Grid.Row="1" Grid.ColumnSpan="4"
                          x:Name="ProgressBar"
                          Height="20" Margin="0,8,0,0"

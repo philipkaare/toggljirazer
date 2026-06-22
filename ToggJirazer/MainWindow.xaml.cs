@@ -165,6 +165,9 @@ public partial class MainWindow : Window
         // Auto-save settings before running so the output path is persisted
         try { _settingsService.Save(config); } catch { /* ignore */ }
 
+        // Read the cache toggle on the UI thread before work moves to a background thread.
+        var cacheEnabled = EnableCacheCheckBox.IsChecked == true;
+
         _isRunning = true;
         RunButton.IsEnabled = false;
         SaveButton.IsEnabled = false;
@@ -183,7 +186,7 @@ public partial class MainWindow : Window
         try
         {
             // Run on a thread-pool thread so the UI stays responsive
-            await Task.Run(async () => await RunReportAsync(config));
+            await Task.Run(async () => await RunReportAsync(config, cacheEnabled, ShowCacheWritePermissionDialog));
             AppendLog(string.Empty);
             AppendLog("Done.");
             ProgressBar.IsIndeterminate = false;
@@ -235,7 +238,10 @@ public partial class MainWindow : Window
     // Report generation (called on a thread-pool thread)
     // -------------------------------------------------------------------------
 
-    private static async Task RunReportAsync(AppConfig appConfig)
+    private static async Task RunReportAsync(
+        AppConfig appConfig,
+        bool cacheEnabled,
+        Func<Exception, bool> cacheWritePermissionPrompt)
     {
         // Determine reporting period
         DateTime startDate;
@@ -262,10 +268,23 @@ public partial class MainWindow : Window
         Console.WriteLine($"Report period: {startDate:yyyy-MM-dd} to {endDate:yyyy-MM-dd}");
         Console.WriteLine($"Toggl workspace: {appConfig.Toggl.WorkspaceId}, project: {appConfig.Toggl.ProjectId}");
         Console.WriteLine($"Jira base URL: {appConfig.Jira.BaseUrl}");
+
+        // Set up the request cache (shared by both services). Disabled when the user unchecks it.
+        HttpResponseCache? cache = null;
+        if (cacheEnabled)
+        {
+            var cacheDir = Path.Combine(AppContext.BaseDirectory, "cache");
+            cache = new HttpResponseCache(cacheDir, TimeSpan.FromDays(1), cacheWritePermissionPrompt);
+            Console.WriteLine($"Request cache enabled (folder: {cacheDir}, expires after 1 day).");
+        }
+        else
+        {
+            Console.WriteLine("Request cache disabled.");
+        }
         Console.WriteLine();
 
         // Fetch Toggl entries for the period
-        using var togglService = new TogglService(appConfig.Toggl);
+        using var togglService = new TogglService(appConfig.Toggl, cache);
         var entries = await togglService.GetDetailedReportAsync(startDate, endDate);
 
         if (entries.Count == 0)
@@ -282,9 +301,9 @@ public partial class MainWindow : Window
         Console.WriteLine();
 
         // Build the report
-        using var jiraService = new JiraService(appConfig.Jira);
+        using var jiraService = new JiraService(appConfig.Jira, cache);
         var reportService = new ReportService(jiraService);
-        var (reportSheets, versionRows, leverances, categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours) =
+        var (reportSheets, versionRows, leverances, categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours, noBudgetRows) =
             await reportService.BuildReportAsync(entries, allEntries);
 
         Console.WriteLine();
@@ -306,7 +325,8 @@ public partial class MainWindow : Window
                 weeklyCategoryConsumedHours,
                 monthlyCategoryConsumedHours,
                 appConfig.Report.OutputFile,
-                extraColumns);
+                extraColumns,
+                noBudgetRows);
         }
         else
         {
@@ -323,6 +343,63 @@ public partial class MainWindow : Window
             var extraColumns = reportService.ReadVersionReportExtraColumns(versionOutputPath);
             reportService.WriteVersionCsv(versionRows, versionOutputPath, extraColumns);
         }
+    }
+
+    // -------------------------------------------------------------------------
+    // Cache permission dialog
+    // -------------------------------------------------------------------------
+
+    /// <summary>
+    /// Shown (on the UI thread) when a cache entry cannot be saved because of a permission
+    /// problem. Returns <c>true</c> if the user wants to try again, <c>false</c> to cancel.
+    /// May be called from a background thread.
+    /// </summary>
+    private bool ShowCacheWritePermissionDialog(Exception ex)
+    {
+        return Dispatcher.Invoke(() =>
+        {
+            var message = new TextBlock
+            {
+                Text = "The request cache could not be saved because of a permission problem:\n\n" +
+                       ex.Message +
+                       "\n\nDo you want to try again?",
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 0, 0, 16)
+            };
+
+            var tryAgainButton = new Button { Content = "Try Again", Width = 90, Height = 28, Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
+            var cancelButton = new Button { Content = "Cancel", Width = 90, Height = 28, IsCancel = true };
+
+            var buttons = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right
+            };
+            buttons.Children.Add(tryAgainButton);
+            buttons.Children.Add(cancelButton);
+
+            var panel = new StackPanel { Margin = new Thickness(16) };
+            panel.Children.Add(message);
+            panel.Children.Add(buttons);
+
+            var dialog = new Window
+            {
+                Title = "Could not save cache",
+                Content = panel,
+                Width = 420,
+                SizeToContent = SizeToContent.Height,
+                ResizeMode = ResizeMode.NoResize,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Owner = this
+            };
+
+            var retry = false;
+            tryAgainButton.Click += (_, _) => { retry = true; dialog.DialogResult = true; };
+            cancelButton.Click += (_, _) => { retry = false; dialog.DialogResult = false; };
+
+            dialog.ShowDialog();
+            return retry;
+        });
     }
 
     // -------------------------------------------------------------------------
