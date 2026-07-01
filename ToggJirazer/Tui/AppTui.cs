@@ -72,6 +72,10 @@ internal sealed class MainView : Window
     private readonly CheckBox _csvBox = new() { Text = "csv", RadioStyle = true };
     private bool _suppressFormatChange; // guard against recursive mutual-exclusivity loop
 
+    // --- Retained Jira field names (not exposed in UI; preserved across read/save) ---
+    private string _jiraBudgetFieldName = "Budget";
+    private string _jiraAccountFieldName = "Account";
+
     // --- Log pane ---
     private readonly TextView _log = new()
     {
@@ -230,6 +234,8 @@ internal sealed class MainView : Window
         _jiraBaseUrl.Text = c.Jira.BaseUrl;
         _jiraEmail.Text = c.Jira.UserEmail;
         _jiraToken.Text = c.Jira.ApiToken;
+        _jiraBudgetFieldName = c.Jira.BudgetFieldName;
+        _jiraAccountFieldName = c.Jira.AccountFieldName;
         _startDate.Text = c.Report.StartDate
             ?? new DateTime(DateTime.Today.Year, 1, 1).ToString("yyyy-MM-dd");
         _endDate.Text = c.Report.EndDate ?? DateTime.Today.ToString("yyyy-MM-dd");
@@ -261,6 +267,8 @@ internal sealed class MainView : Window
                 BaseUrl = _jiraBaseUrl.Text.Trim(),
                 UserEmail = _jiraEmail.Text.Trim(),
                 ApiToken = _jiraToken.Text,
+                BudgetFieldName = _jiraBudgetFieldName,
+                AccountFieldName = _jiraAccountFieldName,
             },
             Report = new ReportConfig
             {

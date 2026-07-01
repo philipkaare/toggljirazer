@@ -16,7 +16,7 @@ public class SettingsServiceTests
             var original = new AppConfig
             {
                 Toggl = new TogglConfig { ApiToken = "tok", OrganizationId = 1, WorkspaceId = 2, ProjectId = 3 },
-                Jira = new JiraConfig { BaseUrl = "https://x.atlassian.net", UserEmail = "a@b.c", ApiToken = "jt" },
+                Jira = new JiraConfig { BaseUrl = "https://x.atlassian.net", UserEmail = "a@b.c", ApiToken = "jt", BudgetFieldName = "MyBudget", AccountFieldName = "MyAccount" },
                 Report = new ReportConfig { StartDate = "2026-01-01", EndDate = "2026-06-30", OutputFile = "r.xlsx", Format = "xlsx" }
             };
 
@@ -26,6 +26,8 @@ public class SettingsServiceTests
             Assert.Equal(original.Toggl.ApiToken, loaded.Toggl.ApiToken);
             Assert.Equal(original.Toggl.WorkspaceId, loaded.Toggl.WorkspaceId);
             Assert.Equal(original.Jira.BaseUrl, loaded.Jira.BaseUrl);
+            Assert.Equal(original.Jira.BudgetFieldName, loaded.Jira.BudgetFieldName);
+            Assert.Equal(original.Jira.AccountFieldName, loaded.Jira.AccountFieldName);
             Assert.Equal(original.Report.OutputFile, loaded.Report.OutputFile);
             Assert.Equal(original.Report.StartDate, loaded.Report.StartDate);
         }
