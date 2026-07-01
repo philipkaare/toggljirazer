@@ -1,3 +1,4 @@
 <Solution>
+  <Project Path="ToggJirazer.Tests/ToggJirazer.Tests.csproj" />
   <Project Path="ToggJirazer/ToggJirazer.csproj" />
 </Solution>
