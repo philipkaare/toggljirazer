@@ -3,7 +3,7 @@ A console application to generate reports based on Jira and Toggl Track.
 
 ## Overview
 
-ToggJirazer fetches detailed time entries from the [Toggl Track API](https://developers.track.toggl.com/docs/) for a specific project and time period, cross-references them with [Jira](https://developer.atlassian.com/cloud/jira/platform/rest/v3/) issues (matched by issue key found in the time entry description), and produces a report in CSV or XLSX format.
+ToggJirazer fetches detailed time entries from the [Toggl Track API](https://developers.track.toggl.com/docs/) for a specific project and time period, cross-references them with [Jira](https://developer.atlassian.com/cloud/jira/platform/rest/v3/) issues (matched by issue key found in the time entry description), and produces a report in CSV or XLSX format. ToggJirazer runs as an interactive terminal UI, or non-interactively with `--headless`.
 
 ## Report Columns
 
@@ -21,7 +21,7 @@ ToggJirazer fetches detailed time entries from the [Toggl Track API](https://dev
 
 ## Prerequisites
 
-- [.NET 9 SDK](https://dotnet.microsoft.com/download)
+- [.NET 10 SDK](https://dotnet.microsoft.com/download)
 - A [Toggl Track](https://track.toggl.com) account with API access
 - A [Jira](https://www.atlassian.com/software/jira) account with API access
 
@@ -67,14 +67,19 @@ Time entry descriptions in Toggl must begin with a Jira issue key (e.g. `PROJ-12
 ## Building & Running
 
 ```bash
-cd ToggJirazer
-dotnet build
-dotnet run
+# Interactive TUI
+dotnet run --project ToggJirazer
+
+# Or use the helper script
+./run.sh
+
+# Non-interactive run (reads appsettings.json, writes the report, exits)
+dotnet run --project ToggJirazer -- --headless
 ```
 
-Or publish a self-contained executable:
-
-```bash
-dotnet publish -c Release -r linux-x64 --self-contained
-```
+The app is a cross-platform .NET 10 console application (Terminal.Gui). It runs
+on macOS, Linux, and Windows. In the TUI you can edit the Toggl/Jira/Report
+settings, save them, generate the report, and open it in your default
+spreadsheet app. Use `--headless` (or pipe/redirect output) for automation; the
+process exits non-zero on validation or run errors.
 
