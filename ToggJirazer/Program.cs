@@ -1,2 +1,6 @@
-// Entry point replaced by App.xaml (WPF application).
+namespace ToggJirazer;
 
+internal static class Program
+{
+    private static int Main(string[] args) => 0;
+}
