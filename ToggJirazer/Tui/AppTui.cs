@@ -103,7 +103,7 @@ internal sealed class MainView : Window
         Height = Dim.Fill();
 
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
-        var banner = new Label { Text = Banner.Text(version), X = 0, Y = 0, Height = 6 };
+        var banner = new Label { Text = Banner.Text(version), X = 0, Y = 0, Height = 6, Width = Dim.Fill() };
 
         var tabs = BuildTabs();
         tabs.X = 0; tabs.Y = 6; tabs.Width = Dim.Fill(); tabs.Height = 12;
@@ -157,6 +157,16 @@ internal sealed class MainView : Window
             if (key.IsCtrl && key.NoCtrl.NoShift.NoAlt.KeyCode == KeyCode.Q)
             {
                 RequestStop();
+                key.Handled = true;
+            }
+            else if (key.KeyCode == KeyCode.F2)
+            {
+                SaveSettings();
+                key.Handled = true;
+            }
+            else if (key.KeyCode == KeyCode.F5)
+            {
+                _ = GenerateAsync();
                 key.Handled = true;
             }
         };
@@ -326,8 +336,8 @@ internal sealed class MainView : Window
             {
                 _progress.Visible = false;
                 SetButtons(true);
+                _isRunning = false;
             });
-            _isRunning = false;
         }
     }
 
