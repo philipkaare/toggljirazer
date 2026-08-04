@@ -85,27 +85,6 @@ public partial class MainWindow : Window
         };
     }
 
-    private static string? ValidateConfig(AppConfig config)
-    {
-        if (string.IsNullOrWhiteSpace(config.Toggl.ApiToken))
-            return "Toggl API Token is required (Toggl tab).";
-        if (config.Toggl.OrganizationId == 0)
-            return "Toggl Organization ID is required (Toggl tab).";
-        if (config.Toggl.WorkspaceId == 0)
-            return "Toggl Workspace ID is required (Toggl tab).";
-        if (config.Toggl.ProjectId == 0)
-            return "Toggl Project ID is required (Toggl tab).";
-        if (string.IsNullOrWhiteSpace(config.Jira.BaseUrl))
-            return "Jira Base URL is required (Jira tab).";
-        if (string.IsNullOrWhiteSpace(config.Jira.UserEmail))
-            return "Jira User Email is required (Jira tab).";
-        if (string.IsNullOrWhiteSpace(config.Jira.ApiToken))
-            return "Jira API Token is required (Jira tab).";
-        if (string.IsNullOrWhiteSpace(config.Report.OutputFile))
-            return "Output File path is required (Report tab).";
-        return null;
-    }
-
     // -------------------------------------------------------------------------
     // Button handlers
     // -------------------------------------------------------------------------
@@ -155,7 +134,7 @@ public partial class MainWindow : Window
         if (_isRunning) return;
 
         var config = ReadConfigFromUi();
-        var error = ValidateConfig(config);
+        var error = ReportRunner.ValidateConfig(config);
         if (error != null)
         {
             AppendLog($"[ERROR] {error}");
@@ -186,7 +165,9 @@ public partial class MainWindow : Window
         try
         {
             // Run on a thread-pool thread so the UI stays responsive
-            await Task.Run(async () => await RunReportAsync(config, cacheEnabled, ShowCacheWritePermissionDialog));
+            var (startDate, endDate) = ReportRunner.ResolveConfiguredPeriod(config.Report);
+            await Task.Run(async () => await ReportRunner.RunAsync(
+                config, startDate, endDate, cacheEnabled, ShowCacheWritePermissionDialog));
             AppendLog(string.Empty);
             AppendLog("Done.");
             ProgressBar.IsIndeterminate = false;
@@ -231,117 +212,6 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             AppendLog($"[ERROR] Could not open report: {ex.Message}");
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // Report generation (called on a thread-pool thread)
-    // -------------------------------------------------------------------------
-
-    private static async Task RunReportAsync(
-        AppConfig appConfig,
-        bool cacheEnabled,
-        Func<Exception, bool> cacheWritePermissionPrompt)
-    {
-        // Determine reporting period
-        DateTime startDate;
-        DateTime endDate;
-
-        if (!string.IsNullOrWhiteSpace(appConfig.Report.StartDate) &&
-            !string.IsNullOrWhiteSpace(appConfig.Report.EndDate))
-        {
-            if (!DateTime.TryParse(appConfig.Report.StartDate, out startDate))
-                throw new InvalidOperationException(
-                    $"'Start Date' value '{appConfig.Report.StartDate}' is not a valid date. Use yyyy-MM-dd.");
-            if (!DateTime.TryParse(appConfig.Report.EndDate, out endDate))
-                throw new InvalidOperationException(
-                    $"'End Date' value '{appConfig.Report.EndDate}' is not a valid date. Use yyyy-MM-dd.");
-        }
-        else
-        {
-            var now = DateTime.Today;
-            startDate = new DateTime(now.Year, 1, 1);
-            endDate = now;
-            Console.WriteLine($"No period specified — defaulting to Jan 1 to today: {startDate:yyyy-MM-dd} to {endDate:yyyy-MM-dd}");
-        }
-
-        Console.WriteLine($"Report period: {startDate:yyyy-MM-dd} to {endDate:yyyy-MM-dd}");
-        Console.WriteLine($"Toggl workspace: {appConfig.Toggl.WorkspaceId}, project: {appConfig.Toggl.ProjectId}");
-        Console.WriteLine($"Jira base URL: {appConfig.Jira.BaseUrl}");
-
-        // Set up the request cache (shared by both services). Disabled when the user unchecks it.
-        HttpResponseCache? cache = null;
-        if (cacheEnabled)
-        {
-            var cacheDir = Path.Combine(AppContext.BaseDirectory, "cache");
-            cache = new HttpResponseCache(cacheDir, TimeSpan.FromDays(1), cacheWritePermissionPrompt);
-            Console.WriteLine($"Request cache enabled (folder: {cacheDir}, expires after 1 day).");
-        }
-        else
-        {
-            Console.WriteLine("Request cache disabled.");
-        }
-        Console.WriteLine();
-
-        // Fetch Toggl entries for the period
-        using var togglService = new TogglService(appConfig.Toggl, cache);
-        var entries = await togglService.GetDetailedReportAsync(startDate, endDate);
-
-        if (entries.Count == 0)
-        {
-            Console.WriteLine("No Toggl time entries found for the specified period and project.");
-            return;
-        }
-
-        Console.WriteLine();
-
-        // Fetch all-time entries for version totals
-        Console.WriteLine("Fetching all-time Toggl entries for version totals...");
-        var allEntries = await togglService.GetAllEntriesAsync();
-        Console.WriteLine();
-
-        // Build the report
-        using var jiraService = new JiraService(appConfig.Jira, cache);
-        var reportService = new ReportService(jiraService);
-        var (reportSheets, versionRows, leverances, categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours, noBudgetRows) =
-            await reportService.BuildReportAsync(entries, allEntries);
-
-        Console.WriteLine();
-        Console.WriteLine($"Report contains {reportSheets.Sum(s => s.Rows.Count)} rows.");
-        Console.WriteLine($"Version report contains {versionRows.Count} rows.");
-        Console.WriteLine($"Leverances: {leverances.Count}.");
-        Console.WriteLine();
-
-        // Write output
-        var format = appConfig.Report.Format?.Trim().ToLowerInvariant();
-        if (format == "xlsx")
-        {
-            var extraColumns = reportService.ReadVersionReportExtraColumns(appConfig.Report.OutputFile);
-            reportService.WriteXlsx(
-                reportSheets,
-                versionRows,
-                leverances,
-                categoryConsumedHours,
-                weeklyCategoryConsumedHours,
-                monthlyCategoryConsumedHours,
-                appConfig.Report.OutputFile,
-                extraColumns,
-                noBudgetRows);
-        }
-        else
-        {
-            if (!string.IsNullOrEmpty(format) && format != "csv")
-                Console.Error.WriteLine($"Warning: Unrecognized format '{appConfig.Report.Format}'. Defaulting to CSV.");
-
-            var rows = reportSheets.SelectMany(s => s.Rows).ToList();
-            reportService.WriteCsv(rows, appConfig.Report.OutputFile);
-
-            var outputPath = appConfig.Report.OutputFile;
-            var versionOutputPath = Path.Combine(
-                Path.GetDirectoryName(outputPath) ?? string.Empty,
-                Path.GetFileNameWithoutExtension(outputPath) + "_versions" + Path.GetExtension(outputPath));
-            var extraColumns = reportService.ReadVersionReportExtraColumns(versionOutputPath);
-            reportService.WriteVersionCsv(versionRows, versionOutputPath, extraColumns);
         }
     }
 
