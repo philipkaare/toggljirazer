@@ -27,6 +27,7 @@ public static class ScheduledTaskService
         var workingDir = Path.GetDirectoryName(exePath) ?? AppContext.BaseDirectory;
 
         var command =
+            "$ErrorActionPreference = 'Stop'; " +
             $"$action = New-ScheduledTaskAction -Execute '{Escape(exePath)}' -Argument '--auto' -WorkingDirectory '{Escape(workingDir)}'; " +
             "$trigger = New-ScheduledTaskTrigger -Daily -At 09:00; " +
             "$settings = New-ScheduledTaskSettingsSet -StartWhenAvailable; " +
@@ -40,7 +41,7 @@ public static class ScheduledTaskService
     public static void Disable()
     {
         var exitCode = RunPowerShell(
-            $"Unregister-ScheduledTask -TaskName '{TaskName}' -Confirm:$false",
+            $"$ErrorActionPreference = 'Stop'; Unregister-ScheduledTask -TaskName '{TaskName}' -Confirm:$false",
             out var error);
         if (exitCode != 0)
             throw new InvalidOperationException($"Could not remove the scheduled task: {error}");
