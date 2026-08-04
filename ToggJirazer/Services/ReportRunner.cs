@@ -54,7 +54,12 @@ public static class ReportRunner
         return (new DateTime(now.Year, 1, 1), now);
     }
 
-    public static async Task RunAsync(
+    /// <summary>
+    /// Runs the report pipeline. Returns true when an output file was written,
+    /// false when the period had no Toggl entries (nothing was written — callers
+    /// must not proceed to email a stale file in that case).
+    /// </summary>
+    public static async Task<bool> RunAsync(
         AppConfig appConfig,
         DateTime startDate,
         DateTime endDate,
@@ -86,7 +91,7 @@ public static class ReportRunner
         if (entries.Count == 0)
         {
             Console.WriteLine("No Toggl time entries found for the specified period and project.");
-            return;
+            return false;
         }
 
         Console.WriteLine();
@@ -139,5 +144,7 @@ public static class ReportRunner
             var extraColumns = reportService.ReadVersionReportExtraColumns(versionOutputPath);
             reportService.WriteVersionCsv(versionRows, versionOutputPath, extraColumns);
         }
+
+        return true;
     }
 }

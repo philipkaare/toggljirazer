@@ -21,6 +21,12 @@ public class AutomationStateStore
     public AutomationStateStore(string directory)
         => _path = Path.Combine(directory, "automation-state.json");
 
+    /// <summary>
+    /// Loads the state. A missing file or a corrupt/unparseable JSON file (<see cref="JsonException"/>)
+    /// is treated as "no prior send" and returns a fresh state. IO/permission errors are NOT
+    /// swallowed here — they propagate so the auto run exits with an error and retries the next day,
+    /// rather than silently behaving as if no report had ever been sent.
+    /// </summary>
     public AutomationState Load()
     {
         if (!File.Exists(_path)) return new AutomationState();
@@ -29,7 +35,7 @@ public class AutomationStateStore
             return JsonSerializer.Deserialize<AutomationState>(File.ReadAllText(_path))
                    ?? new AutomationState();
         }
-        catch
+        catch (JsonException)
         {
             return new AutomationState();
         }

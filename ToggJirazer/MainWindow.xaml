@@ -187,7 +187,7 @@
                         <CheckBox x:Name="AutoSendCheckBox" Content="Send automatically every month"
                                   VerticalAlignment="Center"
                                   Checked="AutoSend_Checked" Unchecked="AutoSend_Unchecked"
-                                  ToolTip="Registers a daily 09:00 scheduled task; the report is emailed once per month, on the first day this PC is on."/>
+                                  ToolTip="Registers a daily 09:00 scheduled task; the report is emailed once per month, on the first day this PC is on. Automatic sending starts with next month's report — the currently ongoing month is not sent automatically."/>
                     </StackPanel>
                 </Grid>
             </TabItem>

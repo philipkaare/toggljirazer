@@ -217,25 +217,36 @@ public partial class MainWindow : Window
         try
         {
             var (startDate, endDate) = ReportRunner.ResolveConfiguredPeriod(config.Report);
-            await Task.Run(async () => await ReportRunner.RunAsync(
+            var reportWritten = await Task.Run(async () => await ReportRunner.RunAsync(
                 config, startDate, endDate, cacheEnabled, ShowCacheWritePermissionDialog));
+
+            if (reportWritten)
+            {
+                _lastOutputPath = config.Report.OutputFile;
+                OpenReportButton.IsEnabled = File.Exists(_lastOutputPath);
+            }
 
             if (sendEmail)
             {
-                var subject = AutomationLogic.ResolvePlaceholders(config.Email.Subject, endDate);
-                var body = AutomationLogic.ResolvePlaceholders(config.Email.Body, endDate);
-                AppendLog($"Sending email to {string.Join(", ", EmailService.ParseRecipients(config.Email.Recipients))}...");
-                await Task.Run(async () => await EmailService.SendReportAsync(
-                    config.Email, subject, body, config.Report.OutputFile));
-                AppendLog("Email sent.");
+                if (!reportWritten)
+                {
+                    AppendLog("[ERROR] No report was generated; email not sent.");
+                }
+                else
+                {
+                    var subject = AutomationLogic.ResolvePlaceholders(config.Email.Subject, endDate);
+                    var body = AutomationLogic.ResolvePlaceholders(config.Email.Body, endDate);
+                    AppendLog($"Sending email to {string.Join(", ", EmailService.ParseRecipients(config.Email.Recipients))}...");
+                    await Task.Run(async () => await EmailService.SendReportAsync(
+                        config.Email, subject, body, config.Report.OutputFile));
+                    AppendLog("Email sent.");
+                }
             }
 
             AppendLog(string.Empty);
             AppendLog("Done.");
             ProgressBar.IsIndeterminate = false;
             ProgressBar.Value = 100;
-            _lastOutputPath = config.Report.OutputFile;
-            OpenReportButton.IsEnabled = File.Exists(_lastOutputPath);
         }
         catch (Exception ex)
         {
@@ -262,7 +273,14 @@ public partial class MainWindow : Window
         try
         {
             await Task.Run(ScheduledTaskService.Enable);
-            AppendLog($"Daily automatic send enabled (task '{ScheduledTaskService.TaskName}', 09:00; a missed run fires when the PC is next on).");
+
+            // Seed the state so automation starts with next month's report — otherwise
+            // ShouldSend(null, today) is true and the very next 09:00 run would immediately
+            // email the previous month's report, likely duplicating a manually-sent one.
+            new AutomationStateStore(AppContext.BaseDirectory)
+                .Save(new AutomationState { LastSentPeriod = AutomationLogic.GetTargetPeriod(DateTime.Today) });
+
+            AppendLog($"Daily automatic send enabled (task '{ScheduledTaskService.TaskName}', 09:00; a missed run fires when the PC is next on). The first automatic email covers {DateTime.Today:MMMM} and is sent at the start of next month — use 'Send Report by Email Now' if you want last month's report sent now.");
         }
         catch (Exception ex)
         {
