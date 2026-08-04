@@ -54,6 +54,18 @@ public class SettingsService
                     EndDate = node["Report"]?["EndDate"]?.ToString().NullIfEmpty(),
                     OutputFile = node["Report"]?["OutputFile"]?.GetValue<string>() ?? "report.xlsx",
                     Format = node["Report"]?["Format"]?.GetValue<string>() ?? "xlsx"
+                },
+                Email = new EmailConfig
+                {
+                    SmtpHost = node["Email"]?["SmtpHost"]?.GetValue<string>() ?? string.Empty,
+                    SmtpPort = node["Email"]?["SmtpPort"]?.GetValue<int>() ?? 587,
+                    UseSsl = node["Email"]?["UseSsl"]?.GetValue<bool>() ?? false,
+                    Username = node["Email"]?["Username"]?.GetValue<string>() ?? string.Empty,
+                    Password = node["Email"]?["Password"]?.GetValue<string>() ?? string.Empty,
+                    FromAddress = node["Email"]?["FromAddress"]?.GetValue<string>() ?? string.Empty,
+                    Recipients = node["Email"]?["Recipients"]?.GetValue<string>() ?? string.Empty,
+                    Subject = node["Email"]?["Subject"]?.GetValue<string>() ?? new EmailConfig().Subject,
+                    Body = node["Email"]?["Body"]?.GetValue<string>() ?? new EmailConfig().Body
                 }
             };
         }
@@ -110,6 +122,18 @@ public class SettingsService
                 ["EndDate"] = config.Report.EndDate ?? string.Empty,
                 ["OutputFile"] = config.Report.OutputFile,
                 ["Format"] = config.Report.Format
+            },
+            ["Email"] = new JsonObject
+            {
+                ["SmtpHost"] = config.Email.SmtpHost,
+                ["SmtpPort"] = config.Email.SmtpPort,
+                ["UseSsl"] = config.Email.UseSsl,
+                ["Username"] = config.Email.Username,
+                ["Password"] = config.Email.Password,
+                ["FromAddress"] = config.Email.FromAddress,
+                ["Recipients"] = config.Email.Recipients,
+                ["Subject"] = config.Email.Subject,
+                ["Body"] = config.Email.Body
             }
         };
 
