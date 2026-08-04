@@ -78,3 +78,16 @@ Or publish a self-contained executable:
 dotnet publish -c Release -r linux-x64 --self-contained
 ```
 
+## Automatic monthly email
+
+The Email tab configures SMTP settings and recipients for sending the report by email.
+
+- **Send Report by Email Now** generates the report with the configured period and emails
+  it immediately (requires xlsx format).
+- **Send automatically every month** registers a daily Windows scheduled task
+  ("ToggJirazer AutoReport", 09:00, runs when the PC is next on if missed) that starts
+  the app with `--auto`. On each run the app checks `automation-state.json` next to the
+  exe: if the report covering last month (period: Jan 1 → end of previous month) has not
+  been sent yet, it is generated and emailed, and the state is updated. Failures are
+  logged to `logs\auto.log` and retried on the next daily run.
+

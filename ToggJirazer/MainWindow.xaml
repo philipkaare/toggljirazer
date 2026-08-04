@@ -126,6 +126,72 @@
                 </Grid>
             </TabItem>
 
+            <!-- Email settings -->
+            <TabItem Header="Email">
+                <Grid Margin="10,8">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="160"/>
+                        <ColumnDefinition Width="*"/>
+                    </Grid.ColumnDefinitions>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
+
+                    <Label Grid.Row="0" Grid.Column="0" Content="SMTP Host:"/>
+                    <TextBox Grid.Row="0" Grid.Column="1" x:Name="EmailSmtpHost"/>
+
+                    <Label Grid.Row="1" Grid.Column="0" Content="SMTP Port:"/>
+                    <TextBox Grid.Row="1" Grid.Column="1" x:Name="EmailSmtpPort"
+                             ToolTip="587 for STARTTLS, 465 for implicit SSL"/>
+
+                    <Label Grid.Row="2" Grid.Column="0" Content="Implicit SSL:"/>
+                    <CheckBox Grid.Row="2" Grid.Column="1" x:Name="EmailUseSsl"
+                              VerticalAlignment="Center" Margin="0,3"
+                              ToolTip="Check for implicit SSL (port 465); uncheck for STARTTLS (port 587)."/>
+
+                    <Label Grid.Row="3" Grid.Column="0" Content="Username:"/>
+                    <TextBox Grid.Row="3" Grid.Column="1" x:Name="EmailUsername"/>
+
+                    <Label Grid.Row="4" Grid.Column="0" Content="Password:"/>
+                    <PasswordBox Grid.Row="4" Grid.Column="1" x:Name="EmailPassword" PasswordChar="●"/>
+
+                    <Label Grid.Row="5" Grid.Column="0" Content="From Address:"/>
+                    <TextBox Grid.Row="5" Grid.Column="1" x:Name="EmailFromAddress"/>
+
+                    <Label Grid.Row="6" Grid.Column="0" Content="Recipients:"/>
+                    <TextBox Grid.Row="6" Grid.Column="1" x:Name="EmailRecipients"
+                             ToolTip="Separate multiple addresses with semicolons"/>
+
+                    <Label Grid.Row="7" Grid.Column="0" Content="Subject:"/>
+                    <TextBox Grid.Row="7" Grid.Column="1" x:Name="EmailSubject"
+                             ToolTip="{}{month} and {year} are replaced with the report month (Danish) and year"/>
+
+                    <Label Grid.Row="8" Grid.Column="0" Content="Body:" VerticalAlignment="Top" Margin="0,6,4,0"/>
+                    <TextBox Grid.Row="8" Grid.Column="1" x:Name="EmailBody"
+                             Height="70" TextWrapping="Wrap" AcceptsReturn="True"
+                             VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Top"
+                             ToolTip="{}{month} and {year} are replaced with the report month (Danish) and year"/>
+
+                    <StackPanel Grid.Row="9" Grid.Column="1" Orientation="Horizontal" Margin="0,8,0,0">
+                        <Button x:Name="SendEmailNowButton" Content="Send Report by Email Now"
+                                Margin="0,0,16,0" Click="SendEmailNow_Click"/>
+                        <CheckBox x:Name="AutoSendCheckBox" Content="Send automatically every month"
+                                  VerticalAlignment="Center"
+                                  Checked="AutoSend_Checked" Unchecked="AutoSend_Unchecked"
+                                  ToolTip="Registers a daily 09:00 scheduled task; the report is emailed once per month, on the first day this PC is on."/>
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+
         </TabControl>
 
         <!-- Buttons and progress bar -->
