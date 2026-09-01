@@ -185,6 +185,10 @@ public class TogglService : IDisposable
         if (row.TimeEntryId == 0)
             return null;
 
+        // Ignore very short entries (less than 10 seconds). Duration is in milliseconds.
+        if (row.Duration < 10_000)
+            return null;
+
         // Skip entries whose description starts with "Gave" — these are not billable work
         // and must not contribute to the report or the budget categories.
         if (row.Description != null &&

@@ -16,6 +16,13 @@ public class Leverance
     /// <summary>All issues belonging to this leverance (including the anchor).</summary>
     public List<ReportRow> Issues { get; set; } = new();
 
+    /// <summary>
+    /// True when the leverance has had activity within the last month — either hours logged
+    /// or one of its issues updated in Jira. Used to decide whether it appears on the Plan sheet
+    /// (in addition to leverances that already have user-written cells in the existing file).
+    /// </summary>
+    public bool HasRecentActivity { get; set; }
+
     /// <summary>Total worked hours (decimal) across all issues in this leverance.</summary>
     public double TotalHours => Issues.Sum(r =>
         double.TryParse(r.TimeUsedDecimal, System.Globalization.NumberStyles.Float,

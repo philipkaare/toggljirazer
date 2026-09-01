@@ -68,6 +68,26 @@ public class ReportService
         // Fetch JIRA issues in bulk to avoid rate limiting
         var jiraIssues = await _jiraService.GetIssuesBulkAsync(allKeys);
 
+        // Build the fix version → leverance budget map. Start from the Delivery (leverance) tasks
+        // that were already fetched, then look up any remaining referenced fix versions in Jira so
+        // an issue can inherit the budget of the leverance task sharing its fix version — even when
+        // that leverance task has no Toggl time logged and was therefore never bulk-fetched.
+        var versionToBudget = BuildLeveranceBudgetByVersion(jiraIssues);
+        var versionsNeedingBudget = jiraIssues.Values
+            .Where(i => i != null)
+            .SelectMany(i => i!.FixVersions)
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(v => !versionToBudget.ContainsKey(v))
+            .ToList();
+        if (versionsNeedingBudget.Count > 0)
+        {
+            Console.WriteLine($"Resolving leverance budgets for {versionsNeedingBudget.Count} fix version(s) via Jira.");
+            var fetchedBudgets = await _jiraService.GetLeveranceBudgetsByFixVersionAsync(versionsNeedingBudget);
+            foreach (var kv in fetchedBudgets)
+                versionToBudget.TryAdd(kv.Key, kv.Value);
+        }
+
         // Group period entries by year-month to detect multi-month periods
         var byMonth = periodEntries
             .GroupBy(e => new { e.Start.Year, e.Start.Month })
@@ -78,7 +98,7 @@ public class ReportService
         if (byMonth.Count <= 1)
         {
             // Single month (or no entries) — use a single "Rapport" sheet
-            reportSheets = [("Rapport", BuildRowsFromEntries(periodEntries, jiraIssues))];
+            reportSheets = [("Rapport", BuildRowsFromEntries(periodEntries, jiraIssues, versionToBudget))];
         }
         else
         {
@@ -86,7 +106,7 @@ public class ReportService
             reportSheets = byMonth
                 .Select(g => (
                     new DateTime(g.Key.Year, g.Key.Month, 1).ToString("MMMM yyyy", CultureInfo.InvariantCulture),
-                    BuildRowsFromEntries(g.ToList(), jiraIssues)
+                    BuildRowsFromEntries(g.ToList(), jiraIssues, versionToBudget)
                 ))
                 .ToList();
         }
@@ -104,12 +124,33 @@ public class ReportService
         var versionRows = await BuildVersionRowsAsync(periodEntries, allEntries, jiraIssues, releasedVersions);
 
         // Build leverances from all-time rows
-        var allTimeRows = BuildRowsFromEntries(allEntries, jiraIssues);
+        var allTimeRows = BuildRowsFromEntries(allEntries, jiraIssues, versionToBudget);
         var leverances = BuildLeverances(allTimeRows, jiraIssues, releasedVersions);
         Console.WriteLine($"Built {leverances.Count} leverance(s).");
 
+        // Flag which leverances had activity within the last (rolling) month, so the Plan sheet
+        // can hide stale ones. Activity = hours logged on the fix version, or an issue in the fix
+        // version updated in Jira, within the cutoff.
+        var planActivityCutoff = DateTime.Today.AddMonths(-1);
+        var versionsWithRecentHours = GetFixVersionsWithRecentHours(allEntries, jiraIssues, planActivityCutoff);
+
+        var leveranceVersionNames = leverances
+            .Select(l => l.FixVersion)
+            .Where(v => !v.Equals("support", StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        var versionsWithRecentIssueUpdates =
+            await _jiraService.GetFixVersionsWithRecentlyUpdatedIssuesAsync(leveranceVersionNames, planActivityCutoff);
+
+        foreach (var lev in leverances)
+        {
+            // The dedicated "support" leverance is always kept.
+            lev.HasRecentActivity = lev.FixVersion.Equals("support", StringComparison.OrdinalIgnoreCase)
+                || versionsWithRecentHours.Contains(lev.FixVersion)
+                || versionsWithRecentIssueUpdates.Contains(lev.FixVersion);
+        }
+
         var (categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours, noBudgetEntries) =
-            BuildCategoryConsumption(periodEntries, jiraIssues);
+            BuildCategoryConsumption(periodEntries, jiraIssues, versionToBudget);
 
         // The no-budget entries are captured during the same pass that tallies the
         // "(Intet budget)" category, so the dedicated sheet reflects exactly those entries —
@@ -188,12 +229,33 @@ public class ReportService
         return leverances;
     }
 
+    /// <summary>
+    /// Returns the set of fix versions that have at least one Toggl time entry whose start date is
+    /// on or after <paramref name="cutoff"/>, resolved through the fetched Jira issues.
+    /// </summary>
+    private static HashSet<string> GetFixVersionsWithRecentHours(
+        List<TogglTimeEntry> entries,
+        Dictionary<string, JiraIssue?> jiraIssues,
+        DateTime cutoff)
+    {
+        var versions = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var entry in entries)
+        {
+            if (entry.Start.Date < cutoff.Date) continue;
+            var key = ExtractJiraKey(entry.Description);
+            if (key == null) continue;
+            if (!jiraIssues.TryGetValue(key, out var issue) || issue == null) continue;
+            foreach (var fv in issue.FixVersions.Where(v => !string.IsNullOrWhiteSpace(v)))
+                versions.Add(fv);
+        }
+        return versions;
+    }
+
     private static List<ReportRow> BuildRowsFromEntries(
         List<TogglTimeEntry> entries,
-        Dictionary<string, JiraIssue?> jiraIssues)
+        Dictionary<string, JiraIssue?> jiraIssues,
+        Dictionary<string, string> versionToBudget)
     {
-        var versionToBudget = BuildLeveranceBudgetByVersion(jiraIssues);
-
         var groups = entries
             .Select(e => new { Entry = e, Key = ExtractJiraKey(e.Description) })
             .Where(x => !string.IsNullOrEmpty(x.Key))
@@ -634,10 +696,11 @@ public class ReportService
         Dictionary<(int Year, int Week), Dictionary<string, double>> WeeklyCategoryConsumedHours,
         Dictionary<(int Year, int Month), Dictionary<string, double>> MonthlyCategoryConsumedHours,
         List<TogglTimeEntry> NoBudgetEntries)
-        BuildCategoryConsumption(List<TogglTimeEntry> entries, Dictionary<string, JiraIssue?> jiraIssues)
+        BuildCategoryConsumption(
+            List<TogglTimeEntry> entries,
+            Dictionary<string, JiraIssue?> jiraIssues,
+            Dictionary<string, string> versionToBudget)
     {
-        var versionToBudget = BuildLeveranceBudgetByVersion(jiraIssues);
-
         string ResolveCategory(JiraIssue? issue)
         {
             return ResolveIssueBudget(issue, versionToBudget, NoBudgetCategory);
@@ -704,7 +767,7 @@ public class ReportService
             .GroupBy(x => new
             {
                 // Keyed entries group by Jira key; keyless ones group by their description.
-                GroupKey = x.Key ?? $" {x.Entry.Description}",
+                GroupKey = x.Key ?? $" {x.Entry.Description}",
                 x.Entry.User,
                 x.Entry.Email
             });
@@ -772,9 +835,13 @@ public class ReportService
         if (issue?.IssueType.Equals("Support", StringComparison.OrdinalIgnoreCase) == true)
             return "support";
 
-        var firstVersion = issue?.FixVersions.FirstOrDefault(v => !string.IsNullOrWhiteSpace(v));
-        if (!string.IsNullOrWhiteSpace(firstVersion) && versionToBudget.TryGetValue(firstVersion, out var overriddenBudget))
-            return overriddenBudget;
+        // Inherit the budget of the leverance task that shares any of this issue's fix versions.
+        var fixVersions = issue?.FixVersions.Where(v => !string.IsNullOrWhiteSpace(v)) ?? Enumerable.Empty<string>();
+        foreach (var version in fixVersions)
+        {
+            if (versionToBudget.TryGetValue(version, out var inheritedBudget))
+                return inheritedBudget;
+        }
 
         if (!string.IsNullOrWhiteSpace(issue?.Budget))
             return issue.Budget!;
@@ -986,6 +1053,18 @@ public class ReportService
         Dictionary<string, Dictionary<string, string>> extraColumnData)
     {
         var ws = workbook.Worksheets.Add("Plan");
+
+        // Only show leverances that have had recent activity (hours or issue updates within the last
+        // month) or that already have user-written cells in the existing Plan sheet.
+        bool HasWrittenPlanData(string fixVersion)
+        {
+            return (existingWeekData.TryGetValue(fixVersion, out var weekValues) && weekValues.Count > 0)
+                || (extraColumnData.TryGetValue(fixVersion, out var extraValues) && extraValues.Count > 0);
+        }
+
+        leverances = leverances
+            .Where(l => l.HasRecentActivity || HasWrittenPlanData(l.FixVersion))
+            .ToList();
 
         // Determine week range
         var today = DateTime.Today;
