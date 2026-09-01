@@ -2,7 +2,8 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="ToggJirazer" Height="720" Width="760"
-        MinHeight="600" MinWidth="640">
+        MinHeight="600" MinWidth="640"
+        Icon="Assets/toggjirazer.ico">
 
     <Window.Resources>
         <Style TargetType="Label">

@@ -7,10 +7,15 @@
     <Nullable>enable</Nullable>
     <UseWPF>true</UseWPF>
     <EnableWindowsTargeting>true</EnableWindowsTargeting>
+    <ApplicationIcon>Assets\toggjirazer.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <None Remove="appsettings.development.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Resource Include="Assets\toggjirazer.ico" />
   </ItemGroup>
 
   <ItemGroup>
