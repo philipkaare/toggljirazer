@@ -3,7 +3,7 @@ A console application to generate reports based on Jira and Toggl Track.
 
 ## Overview
 
-ToggJirazer fetches detailed time entries from the [Toggl Track API](https://developers.track.toggl.com/docs/) for a specific project and time period, cross-references them with [Jira](https://developer.atlassian.com/cloud/jira/platform/rest/v3/) issues (matched by issue key found in the time entry description), and produces a report in CSV or XLSX format. ToggJirazer runs as an interactive terminal UI, or non-interactively with `--headless`.
+ToggJirazer fetches detailed time entries from the [Toggl Track API](https://developers.track.toggl.com/docs/) for a specific project and time period, cross-references them with [Jira](https://developer.atlassian.com/cloud/jira/platform/rest/v3/) issues (matched by issue key found in the time entry description), and produces a report in CSV or XLSX format. ToggJirazer opens the Windows GUI by default on Windows and runs a console report on macOS/Linux. Use `--tui` for the interactive terminal UI or `--headless` for an explicit non-interactive run.
 
 ## Report Columns
 
@@ -68,18 +68,39 @@ Time entry descriptions in Toggl must begin with a Jira issue key (e.g. `PROJ-12
 
 ```bash
 # Interactive TUI
-dotnet run --project ToggJirazer
+dotnet run --project ToggJirazer -- --tui
 
 # Or use the helper script
-./run.sh
+./run.sh --tui
+
+# Show available options
+./run.sh --help
 
 # Non-interactive run (reads appsettings.json, writes the report, exits)
-dotnet run --project ToggJirazer -- --headless
+./run.sh --headless
 ```
+
+The helper script works from any working directory when invoked by its path.
+It uses `ToggJirazer/appsettings.json` and writes relative report paths inside
+`ToggJirazer/`. Any arguments are forwarded to the application.
 
 The app is a cross-platform .NET 10 console application (Terminal.Gui). It runs
 on macOS, Linux, and Windows. In the TUI you can edit the Toggl/Jira/Report
 settings, save them, generate the report, and open it in your default
-spreadsheet app. Use `--headless` (or pipe/redirect output) for automation; the
+spreadsheet app. Use `--tui` in a terminal to open the TUI. Redirected input/output selects headless mode.
+Use `--headless` for automation; the
 process exits non-zero on validation or run errors.
+
+## Automatic monthly email
+
+The Windows GUI’s Email tab configures SMTP settings and recipients for sending the report by email.
+
+- **Send Report by Email Now** generates the report with the configured period and emails
+  it immediately (requires xlsx format).
+- **Send automatically every month** registers a daily Windows scheduled task
+  ("ToggJirazer AutoReport", 09:00, runs when the PC is next on if missed) that starts
+  the app with `--auto`. On each run the app checks `automation-state.json` next to the
+  exe: if the report covering last month (period: Jan 1 → end of previous month) has not
+  been sent yet, it is generated and emailed, and the state is updated. Failures are
+  logged to `logs\auto.log` and retried on the next daily run.
 

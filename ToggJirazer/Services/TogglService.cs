@@ -25,10 +25,10 @@ public class TogglService : IDisposable
         "billable_duration", "billable"
     ];
 
-    public TogglService(TogglConfig config)
+    public TogglService(TogglConfig config, HttpResponseCache? cache = null)
     {
         _config = config;
-        _httpClient = new HttpClient();
+        _httpClient = new HttpClient(cache?.CreateHandler() ?? (HttpMessageHandler)new HttpClientHandler());
         var credentials = Convert.ToBase64String(Encoding.ASCII.GetBytes($"{config.ApiToken}:api_token"));
         _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", credentials);
         _httpClient.DefaultRequestHeaders.Add("User-Agent", "ToggJirazer/1.0");
@@ -183,6 +183,16 @@ public class TogglService : IDisposable
         Dictionary<long, string> users)
     {
         if (row.TimeEntryId == 0)
+            return null;
+
+        // Ignore very short entries (less than 10 seconds). Duration is in milliseconds.
+        if (row.Duration < 10_000)
+            return null;
+
+        // Skip entries whose description starts with "Gave" — these are not billable work
+        // and must not contribute to the report or the budget categories.
+        if (row.Description != null &&
+            row.Description.TrimStart().StartsWith("Gave", StringComparison.OrdinalIgnoreCase))
             return null;
 
         users.TryGetValue(row.UserId, out var userName);

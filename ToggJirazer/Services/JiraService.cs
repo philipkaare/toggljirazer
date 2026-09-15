@@ -19,10 +19,10 @@ public class JiraService : IDisposable
         PropertyNameCaseInsensitive = true
     };
 
-    public JiraService(JiraConfig config)
+    public JiraService(JiraConfig config, HttpResponseCache? cache = null)
     {
         _config = config;
-        _httpClient = new HttpClient();
+        _httpClient = new HttpClient(cache?.CreateHandler() ?? (HttpMessageHandler)new HttpClientHandler());
         var credentials = Convert.ToBase64String(
             Encoding.ASCII.GetBytes($"{config.UserEmail}:{config.ApiToken}"));
         _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", credentials);
@@ -536,6 +536,185 @@ public class JiraService : IDisposable
         while (!isLastPage);
 
         return results;
+    }
+
+    /// <summary>
+    /// For each supplied fix version, looks up the "Delivery" (leverance) issues that belong to it
+    /// and returns a map of fix version name → budget. This lets issues inherit the budget of the
+    /// leverance task that shares their fix version, even when that leverance task has no Toggl time
+    /// logged and is therefore not part of the bulk-fetched issue set.
+    /// </summary>
+    public async Task<Dictionary<string, string>> GetLeveranceBudgetsByFixVersionAsync(IEnumerable<string> versions)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        await ResolveFieldIdsAsync();
+        if (_budgetFieldId == null)
+            return result; // Budget field unknown — nothing to inherit.
+
+        var distinctVersions = versions
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // Query in batches with `fixVersion in (...)` so many versions resolve in few requests.
+        const int batchSize = 50;
+        for (int i = 0; i < distinctVersions.Count; i += batchSize)
+        {
+            var batch = distinctVersions.Skip(i).Take(batchSize).ToList();
+            var quoted = batch.Select(v => "\"" + v.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"");
+            var jql = $"fixVersion in ({string.Join(", ", quoted)}) AND issuetype = Delivery";
+
+            string? nextPageToken = null;
+            bool isLastPage;
+            do
+            {
+                var requestBody = new JiraSearchRequest
+                {
+                    Jql = jql,
+                    Fields = new List<string> { "issuetype", "fixVersions", _budgetFieldId },
+                    NextPageToken = nextPageToken,
+                    MaxResults = 100
+                };
+                var requestJson = JsonSerializer.Serialize(requestBody, JsonOptions);
+                var content = new StringContent(requestJson, System.Text.Encoding.UTF8, "application/json");
+
+                HttpResponseMessage response;
+                try
+                {
+                    response = await _httpClient.PostAsync("rest/api/3/search/jql", content);
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException(
+                        $"Failed to connect to Jira API: {ex.Message}. " +
+                        "Please check 'Jira:BaseUrl' in appsettings.json and your network connection.", ex);
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var error = await response.Content.ReadAsStringAsync();
+                    Console.Error.WriteLine(
+                        $"  Warning: Jira returned {(int)response.StatusCode} when looking up leverance budgets: {error}");
+                    break;
+                }
+
+                var json = await response.Content.ReadAsStringAsync();
+                var searchResult = JsonSerializer.Deserialize<JiraSearchResponse>(json, JsonOptions);
+                if (searchResult?.Issues == null) break;
+
+                foreach (var issue in searchResult.Issues)
+                {
+                    var budget = ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(_budgetFieldId));
+                    if (string.IsNullOrWhiteSpace(budget)) continue;
+
+                    // Map every fix version of the leverance task (first one wins per version).
+                    var fixVersionNames = issue.Fields?.FixVersions?
+                        .Select(v => v.Name ?? string.Empty)
+                        .Where(n => !string.IsNullOrWhiteSpace(n)) ?? Enumerable.Empty<string>();
+
+                    foreach (var name in fixVersionNames)
+                    {
+                        if (!result.ContainsKey(name))
+                            result[name] = budget!;
+                    }
+                }
+
+                isLastPage = searchResult.IsLast;
+                nextPageToken = searchResult.NextPageToken;
+            }
+            while (!isLastPage);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Returns the subset of the supplied fix versions that have at least one issue updated in Jira
+    /// on or after <paramref name="updatedSince"/>. Used to decide which leverances are still active
+    /// enough to appear on the Plan sheet.
+    /// </summary>
+    public async Task<HashSet<string>> GetFixVersionsWithRecentlyUpdatedIssuesAsync(
+        IEnumerable<string> versions, DateTime updatedSince)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var distinctVersions = versions
+            .Where(v => !string.IsNullOrWhiteSpace(v))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (distinctVersions.Count == 0)
+            return result;
+
+        var sinceStr = updatedSince.ToString("yyyy-MM-dd");
+
+        const int batchSize = 50;
+        for (int i = 0; i < distinctVersions.Count; i += batchSize)
+        {
+            var batch = distinctVersions.Skip(i).Take(batchSize).ToList();
+            var batchSet = new HashSet<string>(batch, StringComparer.OrdinalIgnoreCase);
+            var quoted = batch.Select(v => "\"" + v.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"");
+            var jql = $"fixVersion in ({string.Join(", ", quoted)}) AND updated >= \"{sinceStr}\"";
+
+            string? nextPageToken = null;
+            bool isLastPage;
+            do
+            {
+                var requestBody = new JiraSearchRequest
+                {
+                    Jql = jql,
+                    Fields = new List<string> { "fixVersions" },
+                    NextPageToken = nextPageToken,
+                    MaxResults = 100
+                };
+                var requestJson = JsonSerializer.Serialize(requestBody, JsonOptions);
+                var content = new StringContent(requestJson, System.Text.Encoding.UTF8, "application/json");
+
+                HttpResponseMessage response;
+                try
+                {
+                    response = await _httpClient.PostAsync("rest/api/3/search/jql", content);
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException(
+                        $"Failed to connect to Jira API: {ex.Message}. " +
+                        "Please check 'Jira:BaseUrl' in appsettings.json and your network connection.", ex);
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var error = await response.Content.ReadAsStringAsync();
+                    Console.Error.WriteLine(
+                        $"  Warning: Jira returned {(int)response.StatusCode} when checking recently updated issues: {error}");
+                    break;
+                }
+
+                var json = await response.Content.ReadAsStringAsync();
+                var searchResult = JsonSerializer.Deserialize<JiraSearchResponse>(json, JsonOptions);
+                if (searchResult?.Issues == null) break;
+
+                foreach (var issue in searchResult.Issues)
+                {
+                    var fixVersionNames = issue.Fields?.FixVersions?
+                        .Select(v => v.Name ?? string.Empty)
+                        .Where(n => !string.IsNullOrWhiteSpace(n)) ?? Enumerable.Empty<string>();
+
+                    // Only credit versions that were part of this batch's query.
+                    foreach (var name in fixVersionNames)
+                    {
+                        if (batchSet.Contains(name))
+                            result.Add(name);
+                    }
+                }
+
+                isLastPage = searchResult.IsLast;
+                nextPageToken = searchResult.NextPageToken;
+            }
+            while (!isLastPage);
+        }
+
+        return result;
     }
 
     private static void PrintProgressBar(int current, int total)

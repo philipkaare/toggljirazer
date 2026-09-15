@@ -1,3 +1,4 @@
+using System.IO;
 // Terminal.Gui 2.4.16 API notes (vs. brief which targeted 2.x conceptually):
 //
 //   1. TabView + Tab       → Tabs (Terminal.Gui.Views.Tabs) with InsertTab(int, View)
@@ -20,6 +21,7 @@
 using System.Reflection;
 using Terminal.Gui.App;
 using Terminal.Gui.Drivers;
+using Terminal.Gui.Drawing;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 using ToggJirazer.Cli;
@@ -50,6 +52,7 @@ public static class AppTui
 internal sealed class MainView : Window
 {
     private readonly SettingsService _settings;
+    private EmailConfig _email = new();
 
     // --- Toggl fields ---
     private readonly TextField _togglToken = new() { Secret = true };
@@ -106,23 +109,33 @@ internal sealed class MainView : Window
         Width = Dim.Fill();
         Height = Dim.Fill();
 
+        // The default read-only role can resolve to gray on gray. Give the log
+        // explicit contrast while retaining read-only scrolling and selection.
+        var logColors = new Terminal.Gui.Drawing.Attribute(Color.White, Color.Black);
+        _log.SetScheme(new Scheme { Normal = logColors, ReadOnly = logColors });
+
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
-        var banner = new Label { Text = Banner.Text(version), X = 0, Y = 0, Height = 6, Width = Dim.Fill() };
+        // Reserve space for the log on short terminals; restore the banner on resize.
+        var banner = new Label
+        {
+            Text = Banner.Text(version), X = 0, Y = 0, Width = Dim.Fill(),
+            Height = Dim.Func(_ => Viewport.Height >= 28 ? 6 : 0),
+        };
 
         var tabs = BuildTabs();
-        tabs.X = 0; tabs.Y = 6; tabs.Width = Dim.Fill(); tabs.Height = 12;
+        tabs.X = 0; tabs.Y = Pos.Bottom(banner); tabs.Width = Dim.Fill(); tabs.Height = 10;
 
-        _saveBtn.X = 0;  _saveBtn.Y = Pos.Bottom(tabs) + 1;
-        _runBtn.X = Pos.Right(_saveBtn) + 2; _runBtn.Y = Pos.Bottom(tabs) + 1;
-        _openBtn.X = Pos.Right(_runBtn) + 2; _openBtn.Y = Pos.Bottom(tabs) + 1;
+        _saveBtn.X = 0;  _saveBtn.Y = Pos.Bottom(tabs);
+        _runBtn.X = Pos.Right(_saveBtn) + 2; _runBtn.Y = Pos.Bottom(tabs);
+        _openBtn.X = Pos.Right(_runBtn) + 2; _openBtn.Y = Pos.Bottom(tabs);
 
-        _progress.X = 0; _progress.Y = Pos.Bottom(_saveBtn) + 1;
+        _progress.X = 0; _progress.Y = Pos.Bottom(_saveBtn);
         _progress.Width = Dim.Fill(); _progress.Height = 1;
 
         var logFrame = new FrameView
         {
             Title = "Log",
-            X = 0, Y = Pos.Bottom(_progress) + 1,
+            X = 0, Y = Pos.Bottom(_progress),
             Width = Dim.Fill(), Height = Dim.Fill(),
         };
         _log.X = 0; _log.Y = 0; _log.Width = Dim.Fill(); _log.Height = Dim.Fill();
@@ -131,9 +144,9 @@ internal sealed class MainView : Window
         Add(banner, tabs, _saveBtn, _runBtn, _openBtn, _progress, logFrame);
 
         // Wire button actions
-        _saveBtn.Accepting += (_, _) => SaveSettings();
-        _runBtn.Accepting  += (_, _) => _ = GenerateAsync();
-        _openBtn.Accepting += (_, _) => OpenReport();
+        _saveBtn.Accepting += (_, _) => { Trace("saveBtn.Accepting fired"); SaveSettings(); };
+        _runBtn.Accepting  += (_, _) => { Trace("runBtn.Accepting fired"); _ = GenerateAsync(); };
+        _openBtn.Accepting += (_, _) => { Trace("openBtn.Accepting fired"); OpenReport(); };
 
         // Wire format checkbox mutual exclusivity
         _xlsxBox.ValueChanged += (_, _) =>
@@ -227,6 +240,7 @@ internal sealed class MainView : Window
 
     private void PopulateFromConfig(AppConfig c)
     {
+        _email = c.Email;
         _togglToken.Text = c.Toggl.ApiToken;
         _togglOrg.Text = c.Toggl.OrganizationId == 0 ? "" : c.Toggl.OrganizationId.ToString();
         _togglWorkspace.Text = c.Toggl.WorkspaceId == 0 ? "" : c.Toggl.WorkspaceId.ToString();
@@ -255,6 +269,7 @@ internal sealed class MainView : Window
         long.TryParse(_togglProject.Text, out var proj);
         return new AppConfig
         {
+            Email = _email,
             Toggl = new TogglConfig
             {
                 ApiToken = _togglToken.Text,
@@ -297,19 +312,24 @@ internal sealed class MainView : Window
 
     private async Task GenerateAsync()
     {
+        Trace($"GenerateAsync entry, _isRunning={_isRunning}");
         if (_isRunning) return;
 
         var config = ReadConfig();
         var validationError = ConfigValidator.Validate(config);
+        Trace($"GenerateAsync validation result: {validationError ?? "OK"}");
         if (validationError != null) { AppendLog($"[ERROR] {validationError}"); return; }
 
         // Persist config before running so a partial save is better than none
         try { _settings.Save(config); } catch { /* swallow — running is more important */ }
 
+        _lastOutputPath = null;
+        _openBtn.Enabled = false;
         _isRunning = true;
         SetButtons(false);
         _log.Text = "";
         _progress.Visible = true;
+        SetNeedsDraw();
 
         // Redirect Console.Out/Error through LogTextWriter so service-internal Console writes
         // appear in the TUI log (mirrors the old WPF approach).
@@ -323,12 +343,18 @@ internal sealed class MainView : Window
         try
         {
             // Run the report on a background task; never block the UI thread.
-            await Task.Run(() => ReportRunner.RunAsync(config, s => Console.WriteLine(s)));
+            Trace("GenerateAsync before Task.Run");
+            var reportWritten = await Task.Run(() => Cli.ReportRunner.RunAsync(config, s => Console.WriteLine(s)));
+            Trace("GenerateAsync after Task.Run");
 
-            _lastOutputPath = config.Report.OutputFile;
-            var exists = File.Exists(_lastOutputPath);
+            _lastOutputPath = reportWritten ? config.Report.OutputFile : null;
+            var exists = reportWritten && File.Exists(_lastOutputPath);
             // Marshal UI update back onto the Terminal.Gui main loop
-            Application.Invoke(() => _openBtn.Enabled = exists);
+            Application.Instance.Invoke(() =>
+            {
+                _openBtn.Enabled = exists;
+                _openBtn.SetNeedsDraw();
+            });
         }
         catch (Exception ex)
         {
@@ -340,11 +366,12 @@ internal sealed class MainView : Window
             Console.SetError(originalError);
             logWriter.Dispose();
             errorWriter.Dispose();
-            Application.Invoke(() =>
+            Application.Instance.Invoke(() =>
             {
                 _progress.Visible = false;
                 SetButtons(true);
                 _isRunning = false;
+                SetNeedsDraw();
             });
         }
     }
@@ -370,10 +397,25 @@ internal sealed class MainView : Window
     /// to call from background tasks.</summary>
     private void AppendLog(string line)
     {
-        Application.Invoke(() =>
+        Trace($"AppendLog called: {line}");
+        Application.Instance.Invoke(() =>
         {
+            Trace($"AppendLog Invoke callback running: {line}");
             _log.Text += line + "\n";
             _log.MoveEnd();
+            _log.SetNeedsDraw();
         });
+    }
+
+    // TEMP: file tracer to diagnose the TUI log/button bug (no terminal to observe).
+    private static void Trace(string m)
+    {
+        try
+        {
+            File.AppendAllText(
+                Path.Combine(Directory.GetCurrentDirectory(), "tj-trace.log"),
+                $"{DateTime.Now:HH:mm:ss.fff} {m}\n");
+        }
+        catch { /* ignore */ }
     }
 }
