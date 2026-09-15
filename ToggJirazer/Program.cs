@@ -6,8 +6,17 @@ namespace ToggJirazer;
 
 internal static class Program
 {
-    private static readonly string SettingsPath =
-        Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+    // Resolve appsettings.json from the current working directory so the file the
+    // user edits (and Save writes) is the same one the app reads. Falls back to the
+    // executable's directory when the app is launched from a directory without one.
+    private static readonly string SettingsPath = ResolveSettingsPath();
+
+    private static string ResolveSettingsPath()
+    {
+        var cwdPath = Path.Combine(Directory.GetCurrentDirectory(), "appsettings.json");
+        if (File.Exists(cwdPath)) return cwdPath;
+        return Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+    }
 
     private static async Task<int> Main(string[] args)
     {
@@ -47,6 +56,8 @@ internal static class Program
         Console.WriteLine("  --headless,--run Run the report non-interactively using appsettings.json.");
         Console.WriteLine("  --help, -h       Show this help.");
         Console.WriteLine();
-        Console.WriteLine("Configuration is read from appsettings.json next to the executable.");
+        Console.WriteLine("Configuration is read from appsettings.json in the current working directory");
+        Console.WriteLine("(falling back to the executable's directory). The generated report is written");
+        Console.WriteLine("to the OutputFile path, resolved relative to the working directory.");
     }
 }

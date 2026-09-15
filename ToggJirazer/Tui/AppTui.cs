@@ -131,9 +131,9 @@ internal sealed class MainView : Window
         Add(banner, tabs, _saveBtn, _runBtn, _openBtn, _progress, logFrame);
 
         // Wire button actions
-        _saveBtn.Accepting += (_, _) => SaveSettings();
-        _runBtn.Accepting  += (_, _) => _ = GenerateAsync();
-        _openBtn.Accepting += (_, _) => OpenReport();
+        _saveBtn.Accepting += (_, _) => { Trace("saveBtn.Accepting fired"); SaveSettings(); };
+        _runBtn.Accepting  += (_, _) => { Trace("runBtn.Accepting fired"); _ = GenerateAsync(); };
+        _openBtn.Accepting += (_, _) => { Trace("openBtn.Accepting fired"); OpenReport(); };
 
         // Wire format checkbox mutual exclusivity
         _xlsxBox.ValueChanged += (_, _) =>
@@ -297,10 +297,12 @@ internal sealed class MainView : Window
 
     private async Task GenerateAsync()
     {
+        Trace($"GenerateAsync entry, _isRunning={_isRunning}");
         if (_isRunning) return;
 
         var config = ReadConfig();
         var validationError = ConfigValidator.Validate(config);
+        Trace($"GenerateAsync validation result: {validationError ?? "OK"}");
         if (validationError != null) { AppendLog($"[ERROR] {validationError}"); return; }
 
         // Persist config before running so a partial save is better than none
@@ -310,6 +312,7 @@ internal sealed class MainView : Window
         SetButtons(false);
         _log.Text = "";
         _progress.Visible = true;
+        SetNeedsDraw();
 
         // Redirect Console.Out/Error through LogTextWriter so service-internal Console writes
         // appear in the TUI log (mirrors the old WPF approach).
@@ -323,12 +326,18 @@ internal sealed class MainView : Window
         try
         {
             // Run the report on a background task; never block the UI thread.
+            Trace("GenerateAsync before Task.Run");
             await Task.Run(() => ReportRunner.RunAsync(config, s => Console.WriteLine(s)));
+            Trace("GenerateAsync after Task.Run");
 
             _lastOutputPath = config.Report.OutputFile;
             var exists = File.Exists(_lastOutputPath);
             // Marshal UI update back onto the Terminal.Gui main loop
-            Application.Invoke(() => _openBtn.Enabled = exists);
+            Application.Instance.Invoke(() =>
+            {
+                _openBtn.Enabled = exists;
+                _openBtn.SetNeedsDraw();
+            });
         }
         catch (Exception ex)
         {
@@ -340,11 +349,12 @@ internal sealed class MainView : Window
             Console.SetError(originalError);
             logWriter.Dispose();
             errorWriter.Dispose();
-            Application.Invoke(() =>
+            Application.Instance.Invoke(() =>
             {
                 _progress.Visible = false;
                 SetButtons(true);
                 _isRunning = false;
+                SetNeedsDraw();
             });
         }
     }
@@ -370,10 +380,25 @@ internal sealed class MainView : Window
     /// to call from background tasks.</summary>
     private void AppendLog(string line)
     {
-        Application.Invoke(() =>
+        Trace($"AppendLog called: {line}");
+        Application.Instance.Invoke(() =>
         {
+            Trace($"AppendLog Invoke callback running: {line}");
             _log.Text += line + "\n";
             _log.MoveEnd();
+            _log.SetNeedsDraw();
         });
+    }
+
+    // TEMP: file tracer to diagnose the TUI log/button bug (no terminal to observe).
+    private static void Trace(string m)
+    {
+        try
+        {
+            File.AppendAllText(
+                Path.Combine(Directory.GetCurrentDirectory(), "tj-trace.log"),
+                $"{DateTime.Now:HH:mm:ss.fff} {m}\n");
+        }
+        catch { /* ignore */ }
     }
 }
