@@ -539,6 +539,97 @@ public class JiraService : IDisposable
     }
 
     /// <summary>
+    /// Resolves, for each supplied issue, the budget of the nearest ancestor in its parent chain.
+    /// Ancestors are fetched level by level and only as far as needed: the walk stops climbing a
+    /// branch as soon as an ancestor carries a budget. Returns a map of issue key -> inherited
+    /// budget, containing only the issues where an ancestor budget was actually found.
+    /// </summary>
+    public async Task<Dictionary<string, string>> GetInheritedParentBudgetsAsync(
+        IEnumerable<JiraIssue> issues)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        await ResolveFieldIdsAsync();
+        if (_budgetFieldId == null)
+            return result; // Budget field unknown - nothing to inherit.
+
+        var starting = issues.Where(i => !string.IsNullOrEmpty(i.ParentKey)).ToList();
+        if (starting.Count == 0) return result;
+
+        var ancestors = new Dictionary<string, JiraIssue?>(StringComparer.OrdinalIgnoreCase);
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var pending = starting
+            .Select(i => i.ParentKey!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        while (pending.Count > 0)
+        {
+            Console.WriteLine($"  Fetching {pending.Count} parent issue(s) to inherit budgets.");
+
+            var batchParents = new Dictionary<string, JiraIssue?>(StringComparer.OrdinalIgnoreCase);
+            var parentErrors = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+
+            const int batchSize = 100;
+            for (int i = 0; i < pending.Count; i += batchSize)
+                await FetchRawIssuesBulkAsync(pending.Skip(i).Take(batchSize), batchParents, parentErrors);
+
+            foreach (var kv in parentErrors)
+                Console.WriteLine($"  Warning: Parent issue '{kv.Key}' could not be fetched (status {kv.Value}); budget will not be inherited.");
+
+            foreach (var kv in batchParents)
+                ancestors[kv.Key] = kv.Value;
+            foreach (var key in pending)
+                visited.Add(key);
+
+            // Climb only the branches that still have no budget to offer.
+            pending = batchParents.Values
+                .Where(i => i != null
+                            && string.IsNullOrWhiteSpace(i.Budget)
+                            && !string.IsNullOrEmpty(i.ParentKey))
+                .Select(i => i!.ParentKey!)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Where(pk => !visited.Contains(pk))
+                .ToList();
+        }
+
+        foreach (var issue in starting)
+        {
+            var inherited = NearestAncestorBudget(issue, ancestors);
+            if (string.IsNullOrWhiteSpace(inherited)) continue;
+
+            result[issue.Key] = inherited!;
+            Console.WriteLine($"  Issue '{issue.Key}' has no budget; inheriting from parent chain: {inherited}");
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Walks up the parent chain of <paramref name="issue"/> and returns the budget of the nearest
+    /// ancestor that has one. Returns <c>null</c> when no ancestor carries a budget, when an
+    /// ancestor was not fetched, or when the chain is circular.
+    /// </summary>
+    public static string? NearestAncestorBudget(
+        JiraIssue issue,
+        IReadOnlyDictionary<string, JiraIssue?> issuesByKey)
+    {
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { issue.Key };
+        var current = issue;
+        while (!string.IsNullOrEmpty(current.ParentKey) && visited.Add(current.ParentKey))
+        {
+            if (!issuesByKey.TryGetValue(current.ParentKey, out var parent) || parent == null)
+                return null;
+            if (!string.IsNullOrWhiteSpace(parent.Budget))
+                return parent.Budget;
+            current = parent;
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// For each supplied fix version, looks up the "Delivery" (leverance) issues that belong to it
     /// and returns a map of fix version name → budget. This lets issues inherit the budget of the
     /// leverance task that shares their fix version, even when that leverance task has no Toggl time
