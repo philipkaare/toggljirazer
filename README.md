@@ -80,7 +80,16 @@ dotnet run --project ToggJirazer -- --tui
 ./run.sh --headless
 ```
 
-The helper script works from any working directory when invoked by its path.
+On Windows use the PowerShell helper script instead:
+
+```powershell
+.\run.ps1            # Windows GUI
+.\run.ps1 --tui      # interactive terminal UI
+.\run.ps1 --help
+.\run.ps1 --headless
+```
+
+The helper scripts work from any working directory when invoked by their path.
 It uses `ToggJirazer/appsettings.json` and writes relative report paths inside
 `ToggJirazer/`. Any arguments are forwarded to the application.
 
