@@ -88,6 +88,26 @@ public class ReportService
                 versionToBudget.TryAdd(kv.Key, kv.Value);
         }
 
+        // Issues that are still without a budget after fix version inheritance fall back to the
+        // budget of the nearest ancestor in their parent chain. Resolving which issues those are
+        // reuses ResolveIssueBudget, so the precedence rules live in exactly one place.
+        var noInheritance = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var issuesNeedingParentBudget = jiraIssues.Values
+            .Where(i => i != null && !string.IsNullOrEmpty(i.ParentKey))
+            .Select(i => i!)
+            .Where(i => string.Equals(
+                ResolveIssueBudget(i, versionToBudget, noInheritance, NoBudgetCategory),
+                NoBudgetCategory,
+                StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        var inheritedBudgets = noInheritance;
+        if (issuesNeedingParentBudget.Count > 0)
+        {
+            Console.WriteLine($"Resolving parent budgets for {issuesNeedingParentBudget.Count} issue(s) without budget.");
+            inheritedBudgets = await _jiraService.GetInheritedParentBudgetsAsync(issuesNeedingParentBudget);
+        }
+
         // Group period entries by year-month to detect multi-month periods
         var byMonth = periodEntries
             .GroupBy(e => new { e.Start.Year, e.Start.Month })
@@ -98,7 +118,7 @@ public class ReportService
         if (byMonth.Count <= 1)
         {
             // Single month (or no entries) — use a single "Rapport" sheet
-            reportSheets = [("Rapport", BuildRowsFromEntries(periodEntries, jiraIssues, versionToBudget))];
+            reportSheets = [("Rapport", BuildRowsFromEntries(periodEntries, jiraIssues, versionToBudget, inheritedBudgets))];
         }
         else
         {
@@ -106,7 +126,7 @@ public class ReportService
             reportSheets = byMonth
                 .Select(g => (
                     new DateTime(g.Key.Year, g.Key.Month, 1).ToString("MMMM yyyy", CultureInfo.InvariantCulture),
-                    BuildRowsFromEntries(g.ToList(), jiraIssues, versionToBudget)
+                    BuildRowsFromEntries(g.ToList(), jiraIssues, versionToBudget, inheritedBudgets)
                 ))
                 .ToList();
         }
@@ -124,7 +144,7 @@ public class ReportService
         var versionRows = await BuildVersionRowsAsync(periodEntries, allEntries, jiraIssues, releasedVersions);
 
         // Build leverances from all-time rows
-        var allTimeRows = BuildRowsFromEntries(allEntries, jiraIssues, versionToBudget);
+        var allTimeRows = BuildRowsFromEntries(allEntries, jiraIssues, versionToBudget, inheritedBudgets);
         var leverances = BuildLeverances(allTimeRows, jiraIssues, releasedVersions);
         Console.WriteLine($"Built {leverances.Count} leverance(s).");
 
@@ -150,7 +170,7 @@ public class ReportService
         }
 
         var (categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours, noBudgetEntries) =
-            BuildCategoryConsumption(periodEntries, jiraIssues, versionToBudget);
+            BuildCategoryConsumption(periodEntries, jiraIssues, versionToBudget, inheritedBudgets);
 
         // The no-budget entries are captured during the same pass that tallies the
         // "(Intet budget)" category, so the dedicated sheet reflects exactly those entries —
@@ -254,7 +274,8 @@ public class ReportService
     private static List<ReportRow> BuildRowsFromEntries(
         List<TogglTimeEntry> entries,
         Dictionary<string, JiraIssue?> jiraIssues,
-        Dictionary<string, string> versionToBudget)
+        Dictionary<string, string> versionToBudget,
+        Dictionary<string, string> inheritedBudgets)
     {
         var groups = entries
             .Select(e => new { Entry = e, Key = ExtractJiraKey(e.Description) })
@@ -278,7 +299,7 @@ public class ReportService
                 IssueType = issue?.IssueType ?? string.Empty,
                 Key = jiraKey,
                 Summary = issue?.Summary ?? string.Empty,
-                Budget = ResolveIssueBudget(issue, versionToBudget, string.Empty),
+                Budget = ResolveIssueBudget(issue, versionToBudget, inheritedBudgets, string.Empty),
                 Account = issue?.Account ?? string.Empty,
                 Person = group.Key.User,
                 StartDate = startDate,
@@ -699,11 +720,12 @@ public class ReportService
         BuildCategoryConsumption(
             List<TogglTimeEntry> entries,
             Dictionary<string, JiraIssue?> jiraIssues,
-            Dictionary<string, string> versionToBudget)
+            Dictionary<string, string> versionToBudget,
+            Dictionary<string, string> inheritedBudgets)
     {
         string ResolveCategory(JiraIssue? issue)
         {
-            return ResolveIssueBudget(issue, versionToBudget, NoBudgetCategory);
+            return ResolveIssueBudget(issue, versionToBudget, inheritedBudgets, NoBudgetCategory);
         }
 
         var categoryConsumedHours = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
@@ -827,9 +849,10 @@ public class ReportService
         return versionToBudget;
     }
 
-    private static string ResolveIssueBudget(
+    public static string ResolveIssueBudget(
         JiraIssue? issue,
         Dictionary<string, string> versionToBudget,
+        Dictionary<string, string> inheritedBudgets,
         string fallbackWhenMissing)
     {
         if (issue?.IssueType.Equals("Support", StringComparison.OrdinalIgnoreCase) == true)
@@ -845,6 +868,12 @@ public class ReportService
 
         if (!string.IsNullOrWhiteSpace(issue?.Budget))
             return issue.Budget!;
+
+        // Last resort before reporting no budget at all: the budget of the nearest ancestor in the
+        // parent chain, resolved up front in BuildReportAsync.
+        if (issue != null && inheritedBudgets.TryGetValue(issue.Key, out var parentBudget)
+            && !string.IsNullOrWhiteSpace(parentBudget))
+            return parentBudget;
 
         return fallbackWhenMissing;
     }
