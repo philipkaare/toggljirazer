@@ -175,10 +175,9 @@ public class JiraServiceTests
 
         var result = await service.GetIssuesBulkAsync(["ABC-1", "ABC-2", "XYZ-1"]);
 
-        var getCalls = tools.CallsTo(GetIssue).ToList();
-        Assert.Equal(2, getCalls.Count);
-        Assert.Equal("ABC-1", getCalls[0].Args["issueIdOrKey"]);
-        Assert.Equal("XYZ-1", getCalls[1].Args["issueIdOrKey"]);
+        // The rest of the same project is tried first, then the next project.
+        var getCalls = tools.CallsTo(GetIssue).Select(c => c.Args["issueIdOrKey"]).ToList();
+        Assert.Equal(["ABC-1", "ABC-2", "XYZ-1"], getCalls);
         Assert.True(tools.Calls.Count <= 5, $"Expected at most 5 calls, got {tools.Calls.Count}");
         Assert.Equal("Drift", result["XYZ-1"]!.Budget);
     }
@@ -197,6 +196,52 @@ public class JiraServiceTests
         Assert.Equal("ABC-1", getCalls[0].Args["issueIdOrKey"]);
         Assert.Equal("ABC-2", getCalls[1].Args["issueIdOrKey"]);
         Assert.Contains(BudgetId, Fields(tools.CallsTo(Search).First().Args));
+        Assert.Equal("Fondsdrift", result["ABC-2"]!.Budget);
+    }
+
+    [Fact]
+    public async Task Field_id_probes_stop_at_five_calls()
+    {
+        var keys = Enumerable.Range(1, 8).Select(n => $"ABC-{n}").ToList();
+        var tools = Backed(keys.Select(k => Issue(k)), _ => new() { [AccountId] = "Account" });
+        var service = new JiraService(Config, tools);
+
+        await service.GetIssuesBulkAsync(keys);
+
+        Assert.Equal(5, tools.CallsTo(GetIssue).Count());
+    }
+
+    [Theory]
+    [InlineData(500, "Internal server error")]
+    [InlineData(null, "Atlassian returned a result that is not JSON: <html>")]
+    public async Task Field_id_probe_non_key_tool_error_propagates(int? status, string message)
+    {
+        var tools = new FakeJiraTools((tool, _) => tool == GetIssue
+            ? throw new AtlassianToolException(message, status)
+            : Page([Issue("ABC-1")]));
+        var service = new JiraService(Config, tools);
+
+        var ex = await Assert.ThrowsAsync<AtlassianToolException>(() => service.GetIssuesBulkAsync(["ABC-1", "ABC-2"]));
+
+        Assert.Equal(message, ex.Message);
+        Assert.Single(tools.CallsTo(GetIssue));
+        Assert.Empty(tools.CallsTo(Search));
+    }
+
+    [Fact]
+    public async Task Field_ids_keep_probing_the_same_project_when_a_field_is_still_missing()
+    {
+        // ABC-1's issue type has no Budget field on its screen; ABC-2's has.
+        var tools = Backed(
+            [Issue("ABC-1"), Issue("ABC-2", budgetOption: "Fondsdrift")],
+            key => key == "ABC-1" ? new() { [AccountId] = "Account" } : AllNames);
+        var service = new JiraService(Config, tools);
+
+        var result = await service.GetIssuesBulkAsync(["ABC-1", "ABC-2"]);
+
+        var getCalls = tools.CallsTo(GetIssue).Select(c => c.Args["issueIdOrKey"]).ToList();
+        Assert.Equal(["ABC-1", "ABC-2"], getCalls);
+        Assert.True(getCalls.Count <= 5);
         Assert.Equal("Fondsdrift", result["ABC-2"]!.Budget);
     }
 
