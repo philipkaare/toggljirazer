@@ -32,6 +32,7 @@ public partial class MainWindow : Window
         _mcp = mcp;
         ConfirmSignInAgain = ShowSignInAgainDialogAsync;
         RunReport = RunReportPipelineAsync;
+        SignInAgain = () => _mcp!.SignInAsync(CancellationToken.None);
         PopulateUiFromConfig(_settingsService.Load());
 
         if (mcp != null)
@@ -44,6 +45,9 @@ public partial class MainWindow : Window
 
     /// <summary>Asks whether to sign in again before a run. Replaceable by tests.</summary>
     internal Func<Task<bool>> ConfirmSignInAgain { get; set; }
+
+    /// <summary>The interactive Atlassian sign-in offered before a run. Replaceable by tests.</summary>
+    internal Func<Task> SignInAgain { get; set; }
 
     /// <summary>Runs the report pipeline; true when a file was written. Replaceable by tests.</summary>
     internal Func<AppConfig, Task<bool>> RunReport { get; set; }
@@ -222,6 +226,8 @@ public partial class MainWindow : Window
         RunButton.IsEnabled = false;
         SaveButton.IsEnabled = false;
         SendEmailNowButton.IsEnabled = false;
+        // Signing in or out mid-run would drop the connection the run uses.
+        JiraSignIn.IsEnabled = false;
         LogTextBox.Text = string.Empty;
         ProgressBar.IsIndeterminate = true;
         ProgressBar.Value = 0;
@@ -234,9 +240,10 @@ public partial class MainWindow : Window
         Console.SetOut(logWriter);
         Console.SetError(errorWriter);
 
+        var signInAttempted = false;
         try
         {
-            if (!await EnsureSignedInAsync(_mcp!))
+            if (!await EnsureSignedInAsync(_mcp!, () => signInAttempted = true))
             {
                 ProgressBar.IsIndeterminate = false;
                 ProgressBar.Value = 0;
@@ -286,9 +293,16 @@ public partial class MainWindow : Window
             Console.SetError(originalError);
             logWriter.Dispose();
             errorWriter.Dispose();
+
+            // A sign-in check during the run could reset the connection the run uses, so the status is
+            // refreshed once the run is over (before a new run can start). RefreshStatusAsync never throws.
+            if (signInAttempted)
+                await JiraSignIn.RefreshStatusAsync();
+
             RunButton.IsEnabled = true;
             SaveButton.IsEnabled = true;
             SendEmailNowButton.IsEnabled = true;
+            JiraSignIn.IsEnabled = true;
             _isRunning = false;
         }
     }
@@ -297,7 +311,7 @@ public partial class MainWindow : Window
     /// Checks the Atlassian sign-in before a run and, when it is missing or expired, asks to sign in
     /// again. Returns false, after logging an error, when the run should stop.
     /// </summary>
-    private async Task<bool> EnsureSignedInAsync(AtlassianMcp mcp)
+    private async Task<bool> EnsureSignedInAsync(AtlassianMcp mcp, Action onSignInAttempt)
     {
         if (await mcp.IsSignedInAsync(CancellationToken.None))
             return true;
@@ -308,19 +322,16 @@ public partial class MainWindow : Window
             return false;
         }
 
+        onSignInAttempt();
         try
         {
             AppendLog("Signing in to Atlassian — finish the sign-in in your browser...");
-            await mcp.SignInAsync(CancellationToken.None);
+            await SignInAgain();
         }
         catch (Exception ex)
         {
             AppendLog($"[ERROR] Atlassian sign-in failed: {ex.Message}");
             return false;
-        }
-        finally
-        {
-            _ = JiraSignIn.RefreshStatusAsync();
         }
 
         AppendLog("Signed in to Atlassian.");

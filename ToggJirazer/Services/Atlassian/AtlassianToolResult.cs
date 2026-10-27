@@ -3,7 +3,14 @@ using System.Text.Json;
 namespace ToggJirazer.Services.Atlassian;
 
 /// <summary>The Atlassian sign-in is missing, expired or revoked.</summary>
-public sealed class AtlassianAuthException(string message, Exception? inner = null) : Exception(message, inner);
+public sealed class AtlassianAuthException(string message, Exception? inner = null, bool abortsSignIn = false) : Exception(message, inner)
+{
+    /// <summary>
+    /// True when the interactive sign-in ended for a reason a new client registration can't fix: the user
+    /// cancelled, declined or let it time out, or the callback port was busy.
+    /// </summary>
+    public bool AbortsSignIn { get; } = abortsSignIn;
+}
 
 /// <summary>The Atlassian MCP server's rate limit was reached. The run must stop rather than continue with partial data.</summary>
 public sealed class AtlassianRateLimitException()

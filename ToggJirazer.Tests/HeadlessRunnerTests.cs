@@ -77,15 +77,16 @@ public class AtlassianSignInProbeTests
     }
 
     [Fact]
-    public async Task Probe_tool_failure_such_as_refresh_invalid_grant_is_not_signed_in_and_resets()
+    public async Task Probe_tool_failure_such_as_refresh_invalid_grant_is_not_signed_in_without_reset()
     {
+        // Resetting would dispose the connection a running report may be using.
         var resets = 0;
         var signedIn = await AtlassianMcp.ProbeSignInAsync(
             () => throw new AtlassianToolException("invalid_grant", statusCode: null),
             () => { resets++; return Task.CompletedTask; });
 
         Assert.False(signedIn);
-        Assert.Equal(1, resets);
+        Assert.Equal(0, resets);
     }
 
     [Fact]

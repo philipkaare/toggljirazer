@@ -78,6 +78,41 @@ public class MainWindowTests
         Assert.Contains("[ERROR]", window.LogTextBox.Text);
     }
 
+    [AvaloniaFact]
+    public async Task Sign_in_control_is_disabled_while_a_report_runs()
+    {
+        var window = CreateWindow(NotSignedInMcp());
+        window.PopulateUiFromConfig(ValidConfig());
+        window.ConfirmSignInAgain = () => Task.FromResult(true);
+        window.SignInAgain = () => Task.CompletedTask;
+        bool? enabledDuringRun = null;
+        window.RunReport = _ => { enabledDuringRun = window.JiraSignIn.IsEnabled; return Task.FromResult(false); };
+
+        await window.RunReportFlowAsync(sendEmail: false);
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.False(enabledDuringRun);
+        Assert.True(window.JiraSignIn.IsEnabled);
+    }
+
+    [AvaloniaFact]
+    public async Task Sign_in_status_is_refreshed_after_the_run_not_during_it()
+    {
+        var window = CreateWindow(NotSignedInMcp());
+        window.PopulateUiFromConfig(ValidConfig());
+        window.ConfirmSignInAgain = () => Task.FromResult(true);
+        window.SignInAgain = () => { window.JiraSignIn.StatusText.Text = "signed in by test"; return Task.CompletedTask; };
+        string? statusDuringRun = null;
+        window.RunReport = _ => { statusDuringRun = window.JiraSignIn.StatusText.Text; return Task.FromResult(false); };
+
+        await window.RunReportFlowAsync(sendEmail: false);
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal("signed in by test", statusDuringRun);
+        // The refresh after the run finds no stored tokens.
+        Assert.Equal("Not signed in", window.JiraSignIn.StatusText.Text);
+    }
+
     private static AppConfig ValidConfig() => new()
     {
         Toggl = new TogglConfig { ApiToken = "tt", OrganizationId = 1, WorkspaceId = 2, ProjectId = 3 },

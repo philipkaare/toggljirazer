@@ -38,6 +38,12 @@ public sealed class AtlassianTokenStore : ITokenCache
         }
     }
 
+    /// <summary>Deletes the stored tokens but keeps the client registration.</summary>
+    public void ClearTokens()
+    {
+        if (HasTokens) Update(file => file.Tokens = null);
+    }
+
     /// <summary>The dynamically registered OAuth client, persisted alongside the tokens.</summary>
     public (string ClientId, string? ClientSecret)? ClientRegistration
     {

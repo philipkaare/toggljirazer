@@ -33,7 +33,8 @@ public sealed class OAuthCallbackListener
         {
             listener.Close();
             throw new AtlassianAuthException(
-                $"Could not listen for the sign-in callback on port {RedirectUri.Port} — another program may be using it. Close it and try again.", ex);
+                $"Could not listen for the sign-in callback on port {RedirectUri.Port} — another program may be using it. Close it and try again.", ex,
+                abortsSignIn: true);
         }
 
         return ReceiveAsync(listener, timeout, ct);
@@ -57,7 +58,7 @@ public sealed class OAuthCallbackListener
                 }
                 catch (Exception ex) when (ex is HttpListenerException or ObjectDisposedException && timeoutCts.IsCancellationRequested)
                 {
-                    throw new AtlassianAuthException("Sign-in was cancelled or timed out.", ex);
+                    throw new AtlassianAuthException("Sign-in was cancelled or timed out.", ex, abortsSignIn: true);
                 }
 
                 if (!string.Equals(context.Request.Url?.AbsolutePath, RedirectUri.AbsolutePath, StringComparison.Ordinal))
@@ -109,8 +110,10 @@ public sealed class OAuthCallbackListener
         if (!string.IsNullOrEmpty(error))
         {
             var description = values["error_description"];
+            // access_denied: the user declined. Other errors (e.g. invalid_client) may come from a stale client registration.
             throw new AtlassianAuthException(
-                $"Sign-in failed: {(string.IsNullOrEmpty(description) ? error : $"{error} ({description})")}");
+                $"Sign-in failed: {(string.IsNullOrEmpty(description) ? error : $"{error} ({description})")}",
+                abortsSignIn: error == "access_denied");
         }
 
         var code = values["code"];

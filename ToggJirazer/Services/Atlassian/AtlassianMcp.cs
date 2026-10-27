@@ -40,18 +40,47 @@ public sealed class AtlassianMcp : IAsyncDisposable
     /// <summary>Non-interactive tools: never open a browser.</summary>
     public IJiraTools Tools { get; }
 
-    /// <summary>Explicit interactive sign-in — the only place a browser opens.</summary>
+    /// <summary>
+    /// Explicit interactive sign-in — the only place a browser opens. Recovers from a stale stored sign-in
+    /// (see <see cref="SignInWithRecoveryAsync"/>).
+    /// </summary>
     public async Task SignInAsync(CancellationToken ct)
     {
-        await using (var connection = await ConnectAsync(interactive: true, ct))
+        await SignInWithRecoveryAsync(_store, async () =>
         {
+            await using var connection = await ConnectAsync(interactive: true, ct);
             // Connecting authorizes the session; a tool call proves the sign-in actually works.
             await CallAsync(connection.Client, SitesTool, NoArguments, ct);
-        }
+        });
 
         // Drop the non-interactive client so it starts fresh with the new tokens.
         await ResetConnectionAsync();
     }
+
+    /// <summary>
+    /// Sign-in is only offered when the stored sign-in doesn't work, so its tokens are dropped first.
+    /// When the attempt then fails with an Atlassian error while a persisted client registration was
+    /// used (Atlassian may have dropped that client), the registration is dropped too and the attempt
+    /// is repeated once with a newly registered client. A user abort or a network error is not retried.
+    /// </summary>
+    internal static async Task SignInWithRecoveryAsync(AtlassianTokenStore store, Func<Task> attempt)
+    {
+        store.ClearTokens();
+        var usedPersistedRegistration = store.ClientRegistration != null;
+        try
+        {
+            await attempt();
+        }
+        catch (Exception ex) when (usedPersistedRegistration && IsRegistrationSuspect(ex))
+        {
+            store.ClearTokens();
+            store.ClientRegistration = null;
+            await attempt();
+        }
+    }
+
+    private static bool IsRegistrationSuspect(Exception ex) =>
+        ex is AtlassianAuthException { AbortsSignIn: false } or AtlassianToolException;
 
     /// <summary>Signs out: deletes the stored tokens and client registration and drops the cached connection.</summary>
     public async Task SignOutAsync()
@@ -74,7 +103,8 @@ public sealed class AtlassianMcp : IAsyncDisposable
     /// <summary>
     /// Runs the sites call and reports whether it worked. A failed token refresh (e.g. <c>invalid_grant</c>)
     /// may surface as <see cref="AtlassianToolException"/> rather than <see cref="AtlassianAuthException"/>,
-    /// so both count as "not signed in" and drop the cached connection. Network errors propagate.
+    /// so both count as "not signed in". Only an auth failure drops the cached connection: a tool error
+    /// says nothing certain about the connection, which a running report may be using. Network errors propagate.
     /// </summary>
     internal static async Task<bool> ProbeSignInAsync(Func<Task> getSites, Func<Task> resetConnection)
     {
@@ -83,9 +113,13 @@ public sealed class AtlassianMcp : IAsyncDisposable
             await getSites();
             return true;
         }
-        catch (Exception ex) when (ex is AtlassianAuthException or AtlassianToolException)
+        catch (AtlassianAuthException)
         {
             await resetConnection();
+            return false;
+        }
+        catch (AtlassianToolException)
+        {
             return false;
         }
     }
