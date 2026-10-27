@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using ToggJirazer.Models;
@@ -401,11 +402,26 @@ public class JiraService
     /// When Jira rejects the chunk, the keys named in the error are recorded as missing and the rest is
     /// retried; when the error names none of them, the chunk is split in half, so the recursion always ends.
     /// Keys that end up unfetched map to <c>null</c> and get a status in <paramref name="errorStatus"/>.
+    /// If every search of the chunk was rejected without naming a key, the rejection is not about the keys
+    /// (a report with every key missing must not be written), so the first rejection is rethrown.
     /// </summary>
     private async Task FetchRawIssuesBulkAsync(
         List<string> keys,
         Dictionary<string, JiraIssue?> target,
         Dictionary<string, int> errorStatus)
+    {
+        var rejections = new ChunkRejections();
+        await FetchKeysAsync(keys, target, errorStatus, rejections);
+
+        if (rejections.First is { } first && !rejections.KeyNamed && keys.All(k => target.GetValueOrDefault(k) == null))
+            ExceptionDispatchInfo.Throw(first);
+    }
+
+    private async Task FetchKeysAsync(
+        List<string> keys,
+        Dictionary<string, JiraIssue?> target,
+        Dictionary<string, int> errorStatus,
+        ChunkRejections rejections)
     {
         if (keys.Count == 0) return;
 
@@ -416,12 +432,14 @@ public class JiraService
         }
         catch (AtlassianToolException ex) when (IsKeyRejection(ex))
         {
+            rejections.First ??= ex;
             var status = ex.StatusCode ?? 400;
             var rejected = KeysNamedIn(ex.Message, keys);
             if (rejected.Count > 0)
             {
+                rejections.KeyNamed = true;
                 foreach (var key in rejected) MarkMissing(key, status);
-                await FetchRawIssuesBulkAsync(keys.Where(k => !rejected.Contains(k)).ToList(), target, errorStatus);
+                await FetchKeysAsync(keys.Where(k => !rejected.Contains(k)).ToList(), target, errorStatus, rejections);
             }
             else if (keys.Count == 1)
             {
@@ -430,8 +448,8 @@ public class JiraService
             else
             {
                 var half = keys.Count / 2;
-                await FetchRawIssuesBulkAsync(keys.Take(half).ToList(), target, errorStatus);
-                await FetchRawIssuesBulkAsync(keys.Skip(half).ToList(), target, errorStatus);
+                await FetchKeysAsync(keys.Take(half).ToList(), target, errorStatus, rejections);
+                await FetchKeysAsync(keys.Skip(half).ToList(), target, errorStatus, rejections);
             }
             return;
         }
@@ -453,14 +471,22 @@ public class JiraService
         }
     }
 
+    /// <summary>What the key rejections of one chunk looked like: the first one, and whether any named a key.</summary>
+    private sealed class ChunkRejections
+    {
+        public AtlassianToolException? First { get; set; }
+        public bool KeyNamed { get; set; }
+    }
+
     /// <summary>
-    /// True when Jira rejected the JQL because of the keys in it (400/404, or a "does not exist" /
-    /// permission message). Other tool errors (5xx, non-JSON results, protocol errors) are not key
-    /// problems: they propagate and stop the run instead of being retried key by key.
+    /// True when Jira rejected the JQL because of the keys in it (400/404, or a "does not exist" message;
+    /// Atlassian reports keys the user can't see as not existing). Other tool errors (5xx, non-JSON results,
+    /// permission/auth messages, protocol errors) are not key problems: they propagate and stop the run
+    /// instead of being retried key by key.
     /// </summary>
     private static bool IsKeyRejection(AtlassianToolException ex) =>
         ex.StatusCode is 400 or 404
-        || Regex.IsMatch(ex.Message, "does not exist|permission", RegexOptions.IgnoreCase);
+        || Regex.IsMatch(ex.Message, "does not exist", RegexOptions.IgnoreCase);
 
     /// <summary>The keys of <paramref name="chunk"/> that a Jira error message names in single quotes, e.g. "An issue with key 'ABC-9' does not exist".</summary>
     private static HashSet<string> KeysNamedIn(string message, IEnumerable<string> chunk)

@@ -203,6 +203,7 @@ public class JiraServiceTests
     [Theory]
     [InlineData(500, "Internal server error")]
     [InlineData(null, "Atlassian returned a result that is not JSON: <html>")]
+    [InlineData(null, "You do not have permission to use this tool.")]
     public async Task Bulk_non_key_tool_error_propagates_without_retries(int? status, string message)
     {
         var tools = new FakeJiraTools((tool, args) =>
@@ -288,6 +289,22 @@ public class JiraServiceTests
         Assert.True(tools.CallsTo(Search).Count() <= 9, $"Expected at most 9 searches, got {tools.CallsTo(Search).Count()}");
         Assert.Null(result["ABC-3"]);
         Assert.All(keys.Where(k => k != "ABC-3"), k => Assert.NotNull(result[k]));
+    }
+
+    [Fact]
+    public async Task Bulk_unparseable_rejection_of_every_search_throws_instead_of_all_null()
+    {
+        var keys = Enumerable.Range(1, 10).Select(n => $"ABC-{n}").ToList();
+        var tools = new FakeJiraTools((tool, args) =>
+        {
+            if (tool == GetIssue) return NamesResponse(Issue("ABC-1"), AllNames);
+            throw new AtlassianToolException("Something went wrong.", 400);
+        });
+        var service = new JiraService(Config, tools);
+
+        var ex = await Assert.ThrowsAsync<AtlassianToolException>(() => service.GetIssuesBulkAsync(keys));
+
+        Assert.Equal(400, ex.StatusCode);
     }
 
     [Fact]
