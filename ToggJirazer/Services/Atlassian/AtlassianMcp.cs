@@ -53,6 +53,13 @@ public sealed class AtlassianMcp : IAsyncDisposable
         await ResetConnectionAsync();
     }
 
+    /// <summary>Signs out: deletes the stored tokens and client registration and drops the cached connection.</summary>
+    public async Task SignOutAsync()
+    {
+        _store.Clear();
+        await ResetConnectionAsync();
+    }
+
     /// <summary>The user's Atlassian sites, de-duplicated by cloud ID. Throws <see cref="AtlassianAuthException"/> when not signed in.</summary>
     public async Task<IReadOnlyList<AtlassianSite>> GetSitesAsync(CancellationToken ct) =>
         ParseSites(await Tools.CallToolAsync(SitesTool, NoArguments, ct));

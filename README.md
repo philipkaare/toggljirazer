@@ -23,7 +23,7 @@ ToggJirazer fetches detailed time entries from the [Toggl Track API](https://dev
 
 - [.NET 10 SDK](https://dotnet.microsoft.com/download)
 - A [Toggl Track](https://track.toggl.com) account with API access
-- A [Jira](https://www.atlassian.com/software/jira) account with API access
+- A [Jira](https://www.atlassian.com/software/jira) Cloud account (you sign in from the app; no API token needed)
 
 ## Configuration
 
@@ -48,9 +48,8 @@ The settings file looks like this:
     "ProjectId": 789012
   },
   "Jira": {
-    "BaseUrl": "https://yourcompany.atlassian.net",
-    "UserEmail": "your-email@example.com",
-    "ApiToken": "your-jira-api-token"
+    "CloudId": "set-by-the-site-dropdown",
+    "SiteUrl": "https://yourcompany.atlassian.net"
   },
   "Report": {
     "StartDate": "2024-01-01",
@@ -64,12 +63,30 @@ The settings file looks like this:
 - **Toggl:ApiToken** – Found at https://track.toggl.com/profile
 - **Toggl:WorkspaceId** – Found in your Toggl workspace settings URL
 - **Toggl:ProjectId** – The Toggl project ID to report on
-- **Jira:BaseUrl** – Your Jira instance base URL
-- **Jira:UserEmail** – Email address for Jira authentication
-- **Jira:ApiToken** – Create at https://id.atlassian.com/manage-profile/security/api-tokens
+- **Jira:CloudId / SiteUrl** – The Atlassian site to report on. Set them with the Site
+  dropdown on the Jira tab (see below) rather than by hand.
 - **Report:StartDate / EndDate** – Optional. Defaults to the current calendar month if not set.
 - **Report:OutputFile** – Output file path (default: `report.csv`)
 - **Report:Format** – Output format: `csv` (default) or `xlsx`
+
+## Jira: Sign in with Atlassian
+
+ToggJirazer reads Jira through Atlassian's MCP server and signs in with your own
+Atlassian account:
+
+1. Open the **Jira** tab and click **Sign in with Atlassian**. Your browser opens the
+   Atlassian sign-in and consent page; when it says you can close the tab, return to the app.
+2. Pick your site in the **Site** dropdown, which lists the Atlassian sites you can access,
+   and click **Save Settings**.
+
+The sign-in is remembered between launches (stored encrypted next to `appsettings.json`
+as `atlassian-auth.json`). The status line shows whether you are signed in; the button
+reads **Sign out** while you are, and signing out deletes the stored sign-in. If the
+sign-in has expired when you generate a report, the app asks you to sign in again and then
+continues. Headless runs never open a browser: they exit with code 2 and ask you to sign in
+from the app.
+
+If sign-in shows a blocked consent screen, ask your Atlassian organization admin to allow localhost redirects for the Rovo MCP server.
 
 ## How It Works
 
@@ -112,3 +129,10 @@ The Email tab configures SMTP settings and recipients for sending the report by 
   (Danish month name) and year.
 
 Automatic monthly sending was removed. If you enabled it earlier, delete the 'ToggJirazer AutoReport' task in Task Scheduler.
+
+## Developer notes
+
+- `TOGGJIRAZER_SETTINGS_DIR` overrides the per-user settings folder (where
+  `appsettings.json` and `atlassian-auth.json` live). Point it at a throwaway folder to
+  launch the app or a `--headless` run without touching your real settings, for example
+  `$env:TOGGJIRAZER_SETTINGS_DIR = "$env:TEMP\tj-test"; .\run.ps1`.

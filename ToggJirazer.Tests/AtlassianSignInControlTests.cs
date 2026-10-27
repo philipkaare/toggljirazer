@@ -1,0 +1,105 @@
+using Avalonia.Headless.XUnit;
+using ModelContextProtocol.Authentication;
+using ToggJirazer.Services.Atlassian;
+using Xunit;
+
+namespace ToggJirazer.Tests;
+
+public class AtlassianSignInControlTests : IDisposable
+{
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), $"tj-signin-{Guid.NewGuid():N}");
+    private string AuthPath => Path.Combine(_dir, "atlassian-auth.json");
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_dir)) Directory.Delete(_dir, recursive: true);
+    }
+
+    private static readonly AtlassianSite[] Sites =
+    [
+        new("c1", "https://abc.atlassian.net", "ABC"),
+        new("c2", "https://xyz.atlassian.net", "XYZ"),
+    ];
+
+    [AvaloniaFact]
+    public async Task Shows_not_signed_in_without_token()
+    {
+        var control = new AtlassianSignInControl();
+        control.Initialize(new AtlassianMcp(new AtlassianTokenStore(AuthPath), _ => throw new InvalidOperationException("no browser")));
+
+        await control.RefreshStatusAsync();
+
+        Assert.Equal("Not signed in", control.StatusText.Text);
+        Assert.Equal("Sign in with Atlassian", control.SignInButton.Content);
+    }
+
+    [AvaloniaFact]
+    public async Task Shows_not_signed_in_without_mcp()
+    {
+        var control = new AtlassianSignInControl();
+
+        await control.RefreshStatusAsync();
+
+        Assert.Equal("Not signed in", control.StatusText.Text);
+        Assert.Equal("Sign in with Atlassian", control.SignInButton.Content);
+    }
+
+    [AvaloniaFact]
+    public void Selection_is_kept_before_sites_load()
+    {
+        var control = new AtlassianSignInControl();
+        control.SetSelection("c1", "https://abc.atlassian.net");
+
+        Assert.Equal("c1", control.CloudId);
+        Assert.Equal("https://abc.atlassian.net", control.SiteUrl);
+    }
+
+    [AvaloniaFact]
+    public void Site_is_preselected_by_cloud_id()
+    {
+        var control = new AtlassianSignInControl();
+        control.SetSelection("c2", "https://abc.atlassian.net");
+
+        control.ShowSites(Sites);
+
+        Assert.Equal("c2", control.CloudId);
+        Assert.Equal("https://xyz.atlassian.net", control.SiteUrl);
+    }
+
+    [AvaloniaFact]
+    public void Site_is_preselected_by_normalized_url_when_cloud_id_is_empty()
+    {
+        var control = new AtlassianSignInControl();
+        control.SetSelection("", "HTTPS://XYZ.atlassian.net/");
+
+        control.ShowSites(Sites);
+
+        Assert.Equal("c2", control.CloudId);
+        Assert.Equal("https://xyz.atlassian.net", control.SiteUrl);
+    }
+
+    [AvaloniaFact]
+    public void Picking_a_site_updates_cloud_id_and_url()
+    {
+        var control = new AtlassianSignInControl();
+        control.ShowSites(Sites);
+
+        control.SiteComboBox.SelectedIndex = 0;
+
+        Assert.Equal("c1", control.CloudId);
+        Assert.Equal("https://abc.atlassian.net", control.SiteUrl);
+    }
+
+    [Fact]
+    public async Task SignOutAsync_deletes_stored_tokens()
+    {
+        var store = new AtlassianTokenStore(AuthPath);
+        await store.StoreTokensAsync(new TokenContainer { TokenType = "Bearer", AccessToken = "a", ObtainedAt = DateTimeOffset.UtcNow }, CancellationToken.None);
+        Assert.True(store.HasTokens);
+        await using var mcp = new AtlassianMcp(store, _ => throw new InvalidOperationException("no browser"));
+
+        await mcp.SignOutAsync();
+
+        Assert.False(store.HasTokens);
+    }
+}

@@ -1,0 +1,18 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="ToggJirazer.AtlassianSignInControl">
+
+    <Grid ColumnDefinitions="160,*" RowDefinitions="Auto,Auto">
+        <Label Grid.Row="0" Grid.Column="0" Content="Atlassian:"/>
+        <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Spacing="10" Margin="0,3">
+            <Button x:Name="SignInButton" Content="Sign in with Atlassian" Click="SignInButton_Click"/>
+            <TextBlock x:Name="StatusText" Text="Not signed in" VerticalAlignment="Center"
+                       TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <Label Grid.Row="1" Grid.Column="0" Content="Site:"/>
+        <ComboBox Grid.Row="1" Grid.Column="1" x:Name="SiteComboBox"
+                  PlaceholderText="Sign in to load your Atlassian sites"
+                  SelectionChanged="SiteComboBox_SelectionChanged"/>
+    </Grid>
+</UserControl>

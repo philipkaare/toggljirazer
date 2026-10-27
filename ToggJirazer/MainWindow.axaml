@@ -1,5 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:ToggJirazer"
         x:Class="ToggJirazer.MainWindow"
         Title="ToggJirazer" Height="720" Width="760"
         MinHeight="600" MinWidth="640"
@@ -52,7 +53,7 @@
 
             <!-- Jira settings -->
             <TabItem Header="Jira">
-                <TextBlock Margin="10,8" Text="Sign-in controls arrive in the next update."/>
+                <local:AtlassianSignInControl x:Name="JiraSignIn" Margin="10,8"/>
             </TabItem>
 
             <!-- Report settings -->

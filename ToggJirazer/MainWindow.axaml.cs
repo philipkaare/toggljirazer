@@ -7,26 +7,46 @@ using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using ToggJirazer.Models;
 using ToggJirazer.Services;
+using ToggJirazer.Services.Atlassian;
 
 namespace ToggJirazer;
 
 public partial class MainWindow : Window
 {
+    private const string SignInAgainMessage = "Your Atlassian sign-in has expired. Sign in again?";
+
     private readonly SettingsService _settingsService;
+    private readonly AtlassianMcp? _mcp;
     private bool _isRunning;
     private string? _lastOutputPath;
-    // Fields without UI controls (Jira site and custom field names) are carried through from here on Save.
+    // Fields without UI controls (Jira custom field names) are carried through from here on Save.
     private AppConfig _loadedConfig = new();
 
     // Required by Avalonia's runtime XAML loader and designer.
     public MainWindow() : this(SettingsLocator.UserSettingsPath()) { }
 
-    public MainWindow(string settingsPath)
+    public MainWindow(string settingsPath, AtlassianMcp? mcp = null)
     {
         InitializeComponent();
         _settingsService = new SettingsService(settingsPath);
+        _mcp = mcp;
+        ConfirmSignInAgain = ShowSignInAgainDialogAsync;
+        RunReport = RunReportPipelineAsync;
         PopulateUiFromConfig(_settingsService.Load());
+
+        if (mcp != null)
+        {
+            JiraSignIn.Initialize(mcp);
+            // Background status check: never prompts, opens a browser or throws.
+            _ = JiraSignIn.RefreshStatusAsync();
+        }
     }
+
+    /// <summary>Asks whether to sign in again before a run. Replaceable by tests.</summary>
+    internal Func<Task<bool>> ConfirmSignInAgain { get; set; }
+
+    /// <summary>Runs the report pipeline; true when a file was written. Replaceable by tests.</summary>
+    internal Func<AppConfig, Task<bool>> RunReport { get; set; }
 
     // -------------------------------------------------------------------------
     // Settings helpers
@@ -39,6 +59,7 @@ public partial class MainWindow : Window
         TogglOrgId.Text = config.Toggl.OrganizationId == 0 ? string.Empty : config.Toggl.OrganizationId.ToString();
         TogglWorkspaceId.Text = config.Toggl.WorkspaceId == 0 ? string.Empty : config.Toggl.WorkspaceId.ToString();
         TogglProjectId.Text = config.Toggl.ProjectId == 0 ? string.Empty : config.Toggl.ProjectId.ToString();
+        JiraSignIn.SetSelection(config.Jira.CloudId, config.Jira.SiteUrl);
 
         ReportStartDate.SelectedDate = ParseConfigDate(config.Report.StartDate) ?? new DateTime(DateTime.Today.Year, 1, 1);
         ReportEndDate.SelectedDate = ParseConfigDate(config.Report.EndDate) ?? DateTime.Today;
@@ -93,8 +114,8 @@ public partial class MainWindow : Window
             },
             Jira = new JiraConfig
             {
-                CloudId = _loadedConfig.Jira.CloudId,
-                SiteUrl = _loadedConfig.Jira.SiteUrl,
+                CloudId = JiraSignIn.CloudId,
+                SiteUrl = JiraSignIn.SiteUrl,
                 BudgetFieldName = _loadedConfig.Jira.BudgetFieldName,
                 AccountFieldName = _loadedConfig.Jira.AccountFieldName
             },
@@ -174,7 +195,7 @@ public partial class MainWindow : Window
     private async void SendEmailNow_Click(object? sender, RoutedEventArgs e)
         => await RunReportFlowAsync(sendEmail: true);
 
-    private async Task RunReportFlowAsync(bool sendEmail)
+    internal async Task RunReportFlowAsync(bool sendEmail)
     {
         if (_isRunning) return;
 
@@ -186,6 +207,8 @@ public partial class MainWindow : Window
             if (error == null && !string.Equals(config.Report.Format?.Trim(), "xlsx", StringComparison.OrdinalIgnoreCase))
                 error = "Sending by email requires the xlsx report format (Report tab).";
         }
+        if (error == null && _mcp == null)
+            error = "The Atlassian connection is not available. Restart ToggJirazer.";
         if (error != null)
         {
             AppendLog($"[ERROR] {error}");
@@ -194,10 +217,6 @@ public partial class MainWindow : Window
 
         // Auto-save settings before running so the output path is persisted
         try { _settingsService.Save(config); } catch { /* ignore */ }
-
-        // Read the cache toggle on the UI thread before work moves to a background thread.
-        var cacheEnabled = EnableCacheCheckBox.IsChecked == true;
-        var jiraTools = App.Mcp.Tools;
 
         _isRunning = true;
         RunButton.IsEnabled = false;
@@ -217,9 +236,14 @@ public partial class MainWindow : Window
 
         try
         {
-            var (startDate, endDate) = ReportRunner.ResolveConfiguredPeriod(config.Report);
-            var reportWritten = await Task.Run(async () => await ReportRunner.RunAsync(
-                config, jiraTools, startDate, endDate, cacheEnabled, ShowCacheWritePermissionDialog));
+            if (!await EnsureSignedInAsync(_mcp!))
+            {
+                ProgressBar.IsIndeterminate = false;
+                ProgressBar.Value = 0;
+                return;
+            }
+
+            var reportWritten = await RunReport(config);
 
             if (reportWritten)
             {
@@ -235,6 +259,7 @@ public partial class MainWindow : Window
                 }
                 else
                 {
+                    var (_, endDate) = ReportRunner.ResolveConfiguredPeriod(config.Report);
                     var subject = EmailTemplate.ResolvePlaceholders(config.Email.Subject, endDate);
                     var body = EmailTemplate.ResolvePlaceholders(config.Email.Body, endDate);
                     AppendLog($"Sending email to {string.Join(", ", EmailService.ParseRecipients(config.Email.Recipients))}...");
@@ -268,6 +293,54 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// Checks the Atlassian sign-in before a run and, when it is missing or expired, asks to sign in
+    /// again. Returns false, after logging an error, when the run should stop.
+    /// </summary>
+    private async Task<bool> EnsureSignedInAsync(AtlassianMcp mcp)
+    {
+        if (await mcp.IsSignedInAsync(CancellationToken.None))
+            return true;
+
+        if (!await ConfirmSignInAgain())
+        {
+            AppendLog("[ERROR] Not signed in to Atlassian; the report was not run. Use 'Sign in with Atlassian' on the Jira tab.");
+            return false;
+        }
+
+        try
+        {
+            AppendLog("Signing in to Atlassian — finish the sign-in in your browser...");
+            await mcp.SignInAsync(CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"[ERROR] Atlassian sign-in failed: {ex.Message}");
+            return false;
+        }
+        finally
+        {
+            _ = JiraSignIn.RefreshStatusAsync();
+        }
+
+        AppendLog("Signed in to Atlassian.");
+        return true;
+    }
+
+    /// <summary>The real report pipeline: Toggl fetch, Jira lookup through MCP, report file.</summary>
+    private Task<bool> RunReportPipelineAsync(AppConfig config)
+    {
+        // Read the cache toggle on the UI thread before work moves to a background thread.
+        var cacheEnabled = EnableCacheCheckBox.IsChecked == true;
+        var jiraTools = _mcp!.Tools;
+        return Task.Run(async () =>
+        {
+            var (startDate, endDate) = ReportRunner.ResolveConfiguredPeriod(config.Report);
+            return await ReportRunner.RunAsync(
+                config, jiraTools, startDate, endDate, cacheEnabled, ShowCacheWritePermissionDialog);
+        });
+    }
+
     private void OpenReport_Click(object? sender, RoutedEventArgs e)
     {
         if (string.IsNullOrWhiteSpace(_lastOutputPath) || !File.Exists(_lastOutputPath))
@@ -287,7 +360,7 @@ public partial class MainWindow : Window
     }
 
     // -------------------------------------------------------------------------
-    // Cache permission dialog
+    // Dialogs
     // -------------------------------------------------------------------------
 
     /// <summary>
@@ -296,20 +369,27 @@ public partial class MainWindow : Window
     /// May be called from a background thread.
     /// </summary>
     private bool ShowCacheWritePermissionDialog(Exception ex)
-        => Dispatcher.UIThread.InvokeAsync(() => ShowCacheWritePermissionDialogAsync(ex)).GetAwaiter().GetResult();
+        => Dispatcher.UIThread.InvokeAsync(() => ShowConfirmDialogAsync(
+            "Could not save cache",
+            "The request cache could not be saved because of a permission problem:\n\n" +
+            ex.Message +
+            "\n\nDo you want to try again?",
+            "Try Again")).GetAwaiter().GetResult();
 
-    private async Task<bool> ShowCacheWritePermissionDialogAsync(Exception ex)
+    private Task<bool> ShowSignInAgainDialogAsync()
+        => ShowConfirmDialogAsync("Atlassian sign-in", SignInAgainMessage, "Sign in");
+
+    /// <summary>A modal dialog with a confirm button and Cancel; returns <c>true</c> on confirm.</summary>
+    private async Task<bool> ShowConfirmDialogAsync(string title, string text, string confirmText)
     {
         var message = new TextBlock
         {
-            Text = "The request cache could not be saved because of a permission problem:\n\n" +
-                   ex.Message +
-                   "\n\nDo you want to try again?",
+            Text = text,
             TextWrapping = Avalonia.Media.TextWrapping.Wrap,
             Margin = new Avalonia.Thickness(0, 0, 0, 16)
         };
 
-        var tryAgainButton = new Button { Content = "Try Again", Width = 90, Margin = new Avalonia.Thickness(0, 0, 8, 0), IsDefault = true };
+        var confirmButton = new Button { Content = confirmText, Width = 90, Margin = new Avalonia.Thickness(0, 0, 8, 0), IsDefault = true };
         var cancelButton = new Button { Content = "Cancel", Width = 90, IsCancel = true };
 
         var buttons = new StackPanel
@@ -317,7 +397,7 @@ public partial class MainWindow : Window
             Orientation = Orientation.Horizontal,
             HorizontalAlignment = HorizontalAlignment.Right
         };
-        buttons.Children.Add(tryAgainButton);
+        buttons.Children.Add(confirmButton);
         buttons.Children.Add(cancelButton);
 
         var panel = new StackPanel { Margin = new Avalonia.Thickness(16) };
@@ -326,7 +406,7 @@ public partial class MainWindow : Window
 
         var dialog = new Window
         {
-            Title = "Could not save cache",
+            Title = title,
             Content = panel,
             Width = 420,
             SizeToContent = SizeToContent.Height,
@@ -334,7 +414,7 @@ public partial class MainWindow : Window
             WindowStartupLocation = WindowStartupLocation.CenterOwner
         };
 
-        tryAgainButton.Click += (_, _) => dialog.Close(true);
+        confirmButton.Click += (_, _) => dialog.Close(true);
         cancelButton.Click += (_, _) => dialog.Close(false);
 
         return await dialog.ShowDialog<bool>(this);
