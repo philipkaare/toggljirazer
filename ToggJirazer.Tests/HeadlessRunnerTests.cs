@@ -48,6 +48,47 @@ public class HeadlessRunnerTests
         Assert.Equal([NotSignedIn, "Details: Internal server error"], lines);
     }
 
+    private static Func<Task<SignInStatus>> SignedIn() =>
+        () => Task.FromResult(new SignInStatus([new AtlassianSite("cid-1", "https://x.atlassian.net", "X")]));
+
+    [Fact]
+    public async Task Headless_signed_in_runs_the_report_and_exits_0()
+    {
+        var stderr = new StringWriter();
+        var runs = 0;
+
+        var exitCode = await HeadlessRunner.RunAsync(Valid(), SignedIn(),
+            () => { runs++; return Task.CompletedTask; }, stderr);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, runs);
+        Assert.Equal("", stderr.ToString());
+    }
+
+    [Fact]
+    public async Task Headless_report_failure_exits_1_with_the_error()
+    {
+        var stderr = new StringWriter();
+
+        var exitCode = await HeadlessRunner.RunAsync(Valid(), SignedIn(),
+            () => throw new InvalidOperationException("Toggl said no"), stderr);
+
+        Assert.Equal(1, exitCode);
+        Assert.Equal("[ERROR] Toggl said no", stderr.ToString().Trim());
+    }
+
+    [Fact]
+    public async Task Headless_not_signed_in_does_not_run_the_report()
+    {
+        var runs = 0;
+
+        var exitCode = await HeadlessRunner.RunAsync(Valid(), () => Task.FromResult(SignInStatus.NotSignedIn),
+            () => { runs++; return Task.CompletedTask; }, new StringWriter());
+
+        Assert.Equal(2, exitCode);
+        Assert.Equal(0, runs);
+    }
+
     [Fact]
     public async Task Headless_invalid_config_exits_2_before_sign_in_check()
     {

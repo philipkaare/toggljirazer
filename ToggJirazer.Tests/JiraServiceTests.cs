@@ -470,6 +470,24 @@ public class JiraServiceTests
     }
 
     [Fact]
+    public async Task ListFieldNames_reads_at_most_five_projects()
+    {
+        var tools = FieldListing(
+            ("AAA-1", new() { ["summary"] = "Summary" }),
+            ("BBB-1", new() { ["summary"] = "Summary" }),
+            ("CCC-1", new() { ["summary"] = "Summary" }),
+            ("DDD-1", new() { ["summary"] = "Summary" }),
+            ("EEE-1", new() { ["summary"] = "Summary" }),
+            ("FFF-1", new() { [BudgetId] = "Budget" }));
+
+        var fields = await new JiraService(Config, tools).ListFieldNamesAsync();
+
+        Assert.Equal(["AAA-1", "BBB-1", "CCC-1", "DDD-1", "EEE-1"],
+            tools.CallsTo(GetIssue).Select(c => (string)c.Args["issueIdOrKey"]!));
+        Assert.Equal([("summary", "Summary")], fields.ToArray());
+    }
+
+    [Fact]
     public async Task ListFieldNames_empty_when_no_recent_issues()
     {
         var tools = FieldListing();

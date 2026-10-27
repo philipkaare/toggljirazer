@@ -184,6 +184,64 @@ public class TogglSetupServiceTests
     }
 
     [Fact]
+    public async Task Network_failure_says_toggl_could_not_be_reached()
+    {
+        var handler = new FakeHttpHandler(_ => throw new HttpRequestException("No such host is known."));
+        using var svc = new TogglSetupService(handler);
+
+        var ex = await Assert.ThrowsAsync<TogglSetupException>(() => svc.GetOrganizationsAsync("t1"));
+
+        Assert.Equal("Could not reach Toggl: No such host is known.", ex.Message);
+    }
+
+    [Fact]
+    public async Task Malformed_json_is_an_unexpected_response()
+    {
+        var handler = new FakeHttpHandler(_ => FakeHttpHandler.Json("<html>not json</html>"));
+        using var svc = new TogglSetupService(handler);
+
+        var ex = await Assert.ThrowsAsync<TogglSetupException>(() => svc.GetOrganizationsAsync("t1"));
+
+        Assert.Equal("Toggl returned an unexpected response.", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("""{"fullname":"Ann","email":"a@x"}""")]
+    [InlineData("""{"api_token":"","fullname":"Ann"}""")]
+    [InlineData("null")]
+    public async Task Me_without_api_token_is_an_unexpected_response(string body)
+    {
+        var handler = new FakeHttpHandler(_ => FakeHttpHandler.Json(body));
+        using var svc = new TogglSetupService(handler);
+
+        var ex = await Assert.ThrowsAsync<TogglSetupException>(() => svc.SignInAsync("a@x", "pw"));
+
+        Assert.Equal("Toggl returned an unexpected response.", ex.Message);
+    }
+
+    [Fact]
+    public async Task Timeout_says_toggl_did_not_answer_in_time()
+    {
+        // HttpClient reports its own timeout as a TaskCanceledException the caller didn't ask for.
+        var handler = new FakeHttpHandler(_ => throw new TaskCanceledException("The request was canceled due to the configured HttpClient.Timeout."));
+        using var svc = new TogglSetupService(handler);
+
+        var ex = await Assert.ThrowsAsync<TogglSetupException>(() => svc.ValidateTokenAsync("t1"));
+
+        Assert.Equal("Toggl did not answer in time — try again.", ex.Message);
+    }
+
+    [Fact]
+    public async Task Caller_cancellation_still_cancels()
+    {
+        using var cts = new CancellationTokenSource();
+        var handler = new FakeHttpHandler(_ => { cts.Cancel(); throw new TaskCanceledException(); });
+        using var svc = new TogglSetupService(handler);
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => svc.ValidateTokenAsync("t1", cts.Token));
+    }
+
+    [Fact]
     public async Task Other_errors_include_body_when_safe()
     {
         var handler = new FakeHttpHandler(_ => FakeHttpHandler.Json("rate limited", HttpStatusCode.TooManyRequests));

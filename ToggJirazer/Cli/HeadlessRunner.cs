@@ -14,7 +14,11 @@ public static class HeadlessRunner
         RunAsync(config, () => mcp.CheckSignInAsync(CancellationToken.None), mcp.Tools, Console.Error);
 
     /// <summary>Seam for tests: the sign-in check, Jira tools and error writer are injected.</summary>
-    internal static async Task<int> RunAsync(AppConfig config, Func<Task<SignInStatus>> checkSignIn, IJiraTools jiraTools, TextWriter stderr)
+    internal static Task<int> RunAsync(AppConfig config, Func<Task<SignInStatus>> checkSignIn, IJiraTools jiraTools, TextWriter stderr) =>
+        RunAsync(config, checkSignIn, () => ReportRunner.RunAsync(config, jiraTools, Console.WriteLine), stderr);
+
+    /// <summary>Seam for tests: the report pipeline itself is injected too.</summary>
+    internal static async Task<int> RunAsync(AppConfig config, Func<Task<SignInStatus>> checkSignIn, Func<Task> runReport, TextWriter stderr)
     {
         var error = ConfigValidator.Validate(config);
         if (error != null)
@@ -36,7 +40,7 @@ public static class HeadlessRunner
                 return 2;
             }
 
-            await ReportRunner.RunAsync(config, jiraTools, Console.WriteLine);
+            await runReport();
             return 0;
         }
         catch (Exception ex)

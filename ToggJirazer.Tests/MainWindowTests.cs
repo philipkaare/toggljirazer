@@ -67,6 +67,42 @@ public class MainWindowTests
     }
 
     [AvaloniaFact]
+    public async Task Accepted_sign_in_again_signs_in_then_runs_the_report()
+    {
+        var window = CreateWindow(NotSignedInMcp());
+        window.PopulateUiFromConfig(ValidConfig());
+        var order = new List<string>();
+        window.ConfirmSignInAgain = () => { order.Add("confirm"); return Task.FromResult(true); };
+        window.SignInAgain = _ => { order.Add("sign-in"); return Task.CompletedTask; };
+        window.RunReport = _ => { order.Add("run"); return Task.FromResult(false); };
+
+        await window.RunReportFlowAsync(sendEmail: false);
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal(["confirm", "sign-in", "run"], order);
+        Assert.Contains("Signed in to Atlassian.", window.LogTextBox.Text);
+        Assert.DoesNotContain("[ERROR]", window.LogTextBox.Text);
+    }
+
+    [AvaloniaFact]
+    public async Task Failed_sign_in_again_logs_error_and_skips_the_report()
+    {
+        var window = CreateWindow(NotSignedInMcp());
+        window.PopulateUiFromConfig(ValidConfig());
+        window.ConfirmSignInAgain = () => Task.FromResult(true);
+        window.SignInAgain = _ => throw new AtlassianAuthException("Browser closed");
+        var reportRuns = 0;
+        window.RunReport = _ => { reportRuns++; return Task.FromResult(true); };
+
+        await window.RunReportFlowAsync(sendEmail: false);
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal(0, reportRuns);
+        Assert.Contains("[ERROR] Atlassian sign-in failed: Browser closed", window.LogTextBox.Text);
+        Assert.False(window.CancelSignInButton.IsVisible);
+    }
+
+    [AvaloniaFact]
     public async Task Run_logs_error_without_atlassian_connection()
     {
         var window = CreateWindow();
