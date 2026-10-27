@@ -1,11 +1,10 @@
 #!/usr/bin/env pwsh
 # Run ToggJirazer. Any arguments are forwarded to the program.
-# Runs from the ToggJirazer project directory so the app reads/writes the single
-# canonical appsettings.json there and writes report.xlsx alongside it.
+# Runs from the ToggJirazer project directory so relative report paths land in
+# ToggJirazer/. Settings live in the per-user folder (%APPDATA%\ToggJirazer).
 #
 # Examples:
-#   .\run.ps1                 # Windows GUI
-#   .\run.ps1 --tui           # interactive terminal UI
+#   .\run.ps1                 # open the app
 #   .\run.ps1 --headless      # non-interactive report run
 #   .\run.ps1 --help
 

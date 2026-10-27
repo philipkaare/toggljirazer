@@ -1,7 +1,13 @@
 #!/usr/bin/env bash
 # Run ToggJirazer. Any arguments are forwarded to the program.
-# Runs from the ToggJirazer project directory so the app reads/writes the single
-# canonical appsettings.json there and writes report.xlsx alongside it.
+# Runs from the ToggJirazer project directory so relative report paths land in
+# ToggJirazer/. Settings live in the per-user folder
+# (~/Library/Application Support/ToggJirazer on macOS).
+#
+# Examples:
+#   ./run.sh                 # open the app
+#   ./run.sh --headless      # non-interactive report run
+#   ./run.sh --help
 set -euo pipefail
 
 if ! command -v dotnet >/dev/null 2>&1; then
