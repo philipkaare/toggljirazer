@@ -18,6 +18,8 @@ public class TogglConfig
 
 public class JiraConfig
 {
+    public string CloudId { get; set; } = string.Empty;
+    public string SiteUrl { get; set; } = string.Empty;
     public string BaseUrl { get; set; } = string.Empty;
     public string UserEmail { get; set; } = string.Empty;
     public string ApiToken { get; set; } = string.Empty;

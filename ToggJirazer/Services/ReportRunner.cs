@@ -1,5 +1,7 @@
 using System.IO;
+using System.Text.Json;
 using ToggJirazer.Models;
+using ToggJirazer.Services.Atlassian;
 
 namespace ToggJirazer.Services;
 
@@ -102,7 +104,8 @@ public static class ReportRunner
         Console.WriteLine();
 
         // Build the report
-        using var jiraService = new JiraService(appConfig.Jira, cache);
+        // TEMPORARY until Task 3 wires the Atlassian MCP client here.
+        var jiraService = new JiraService(appConfig.Jira, new NotWiredJiraTools());
         var reportService = new ReportService(jiraService);
         var (reportSheets, versionRows, leverances, categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours, noBudgetRows) =
             await reportService.BuildReportAsync(entries, allEntries);
@@ -147,4 +150,11 @@ public static class ReportRunner
 
         return true;
     }
+}
+
+/// <summary>TEMPORARY placeholder so the build stays green until Task 3 wires the real Atlassian MCP tools.</summary>
+internal sealed class NotWiredJiraTools : IJiraTools
+{
+    public Task<JsonElement> CallToolAsync(string toolName, IReadOnlyDictionary<string, object?> arguments, CancellationToken ct = default) =>
+        throw new NotSupportedException("Jira over MCP is wired in Task 3.");
 }

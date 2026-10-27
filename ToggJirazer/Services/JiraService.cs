@@ -1,60 +1,89 @@
-using System.Net.Http;
-using System.Net.Http.Headers;
-using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using ToggJirazer.Models;
+using ToggJirazer.Services.Atlassian;
 
 namespace ToggJirazer.Services;
 
-public class JiraService : IDisposable
+/// <summary>
+/// Reads Jira data through the Atlassian MCP server's tools. Every search is a bounded JQL query
+/// (<c>key in (...)</c>, <c>fixVersion in (...)</c>), batched to keep the call count low.
+/// <see cref="AtlassianAuthException"/> and <see cref="AtlassianRateLimitException"/> always propagate.
+/// </summary>
+public class JiraService
 {
-    private readonly HttpClient _httpClient;
+    private const string SearchTool = "searchJiraIssuesUsingJql";
+    private const string GetIssueTool = "getJiraIssue";
+    private const string ContentFormat = "adf";
+    private const int KeyChunkSize = 100;
+    private const int VersionBatchSize = 50;
+    private const int PageSize = 100;
+    private const int MaxFieldIdLookups = 5;
+
     private readonly JiraConfig _config;
+    private readonly IJiraTools _tools;
 
     private string? _budgetFieldId;
     private string? _accountFieldId;
+    private bool _fieldIdsResolved;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
         PropertyNameCaseInsensitive = true
     };
 
-    public JiraService(JiraConfig config, HttpResponseCache? cache = null)
+    public JiraService(JiraConfig config, IJiraTools tools)
     {
         _config = config;
-        _httpClient = new HttpClient(cache?.CreateHandler() ?? (HttpMessageHandler)new HttpClientHandler());
-        var credentials = Convert.ToBase64String(
-            Encoding.ASCII.GetBytes($"{config.UserEmail}:{config.ApiToken}"));
-        _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", credentials);
-        _httpClient.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        _httpClient.BaseAddress = new Uri(config.BaseUrl.TrimEnd('/') + "/");
+        _tools = tools;
     }
 
-    private async Task ResolveFieldIdsAsync()
+    /// <summary>
+    /// Finds the Budget and Account custom field IDs by name, once per service instance. Tries the first
+    /// key of each distinct project in <paramref name="candidateKeys"/> (at most
+    /// <see cref="MaxFieldIdLookups"/> <c>getJiraIssue</c> calls), stopping as soon as both are found.
+    /// Does nothing when there is no candidate key yet.
+    /// </summary>
+    private async Task ResolveFieldIdsAsync(IEnumerable<string> candidateKeys)
     {
-        if (_budgetFieldId != null && _accountFieldId != null) return;
+        if (_fieldIdsResolved) return;
 
-        HttpResponseMessage response;
-        try
+        var probes = candidateKeys
+            .Where(k => !string.IsNullOrWhiteSpace(k))
+            .GroupBy(ProjectOf, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .Take(MaxFieldIdLookups)
+            .ToList();
+        if (probes.Count == 0) return;
+
+        _fieldIdsResolved = true;
+        foreach (var key in probes)
         {
-            response = await _httpClient.GetAsync("rest/api/3/field");
+            if (_budgetFieldId != null && _accountFieldId != null) break;
+
+            JsonElement root;
+            try
+            {
+                root = await _tools.CallToolAsync(GetIssueTool, new Dictionary<string, object?>
+                {
+                    ["cloudId"] = _config.CloudId,
+                    ["issueIdOrKey"] = key,
+                    ["fields"] = new[] { "*all" },
+                    ["expand"] = "names",
+                    ["responseContentFormat"] = ContentFormat,
+                });
+            }
+            catch (AtlassianToolException)
+            {
+                continue; // This key can't be read; try the next project.
+            }
+
+            var names = ReadFieldNames(root);
+            _budgetFieldId ??= names.FirstOrDefault(n =>
+                string.Equals(n.Name, _config.BudgetFieldName, StringComparison.OrdinalIgnoreCase)).Id;
+            _accountFieldId ??= names.FirstOrDefault(n =>
+                string.Equals(n.Name, _config.AccountFieldName, StringComparison.OrdinalIgnoreCase)).Id;
         }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException(
-                $"Failed to fetch Jira field metadata: {ex.Message}", ex);
-        }
-
-        if (!response.IsSuccessStatusCode) return;
-
-        var json = await response.Content.ReadAsStringAsync();
-        var fields = JsonSerializer.Deserialize<List<JiraFieldResponse>>(json, JsonOptions);
-        if (fields == null) return;
-
-        _budgetFieldId = fields.FirstOrDefault(f =>
-            string.Equals(f.Name, _config.BudgetFieldName, StringComparison.OrdinalIgnoreCase))?.Id;
-        _accountFieldId = fields.FirstOrDefault(f =>
-            string.Equals(f.Name, _config.AccountFieldName, StringComparison.OrdinalIgnoreCase))?.Id;
 
         if (_budgetFieldId == null)
             Console.WriteLine($"  Warning: Jira field '{_config.BudgetFieldName}' not found in field metadata.");
@@ -62,9 +91,109 @@ public class JiraService : IDisposable
             Console.WriteLine($"  Warning: Jira field '{_config.AccountFieldName}' not found in field metadata.");
     }
 
+    private static string ProjectOf(string issueKey)
+    {
+        var dash = issueKey.LastIndexOf('-');
+        return dash > 0 ? issueKey[..dash] : issueKey;
+    }
+
+    /// <summary>Reads the field ID → display name map that <c>expand: "names"</c> adds to each issue node.</summary>
+    private static List<(string Id, string Name)> ReadFieldNames(JsonElement root)
+    {
+        var result = new List<(string Id, string Name)>();
+        foreach (var node in IssueNodes(root))
+        {
+            if (!node.TryGetProperty("names", out var names) || names.ValueKind != JsonValueKind.Object) continue;
+            foreach (var property in names.EnumerateObject())
+            {
+                if (property.Value.ValueKind == JsonValueKind.String)
+                    result.Add((property.Name, property.Value.GetString()!));
+            }
+        }
+        return result;
+    }
+
+    private static IEnumerable<JsonElement> IssueNodes(JsonElement root)
+    {
+        if (root.ValueKind == JsonValueKind.Object
+            && root.TryGetProperty("issues", out var issues)
+            && issues.ValueKind == JsonValueKind.Object
+            && issues.TryGetProperty("nodes", out var nodes)
+            && nodes.ValueKind == JsonValueKind.Array)
+        {
+            return nodes.EnumerateArray();
+        }
+        return [];
+    }
+
+    private static string? NextPageToken(JsonElement root)
+    {
+        if (root.ValueKind == JsonValueKind.Object
+            && root.TryGetProperty("issues", out var issues)
+            && issues.ValueKind == JsonValueKind.Object
+            && issues.TryGetProperty("pageInfo", out var pageInfo)
+            && pageInfo.ValueKind == JsonValueKind.Object
+            && pageInfo.TryGetProperty("hasNextPage", out var hasNext)
+            && hasNext.ValueKind == JsonValueKind.True
+            && pageInfo.TryGetProperty("endCursor", out var cursor)
+            && cursor.ValueKind == JsonValueKind.String
+            && !string.IsNullOrEmpty(cursor.GetString()))
+        {
+            return cursor.GetString();
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Runs a JQL search through all its pages, handing each issue to <paramref name="onIssue"/> as it
+    /// arrives, so issues from pages before a failing page are kept.
+    /// </summary>
+    private async Task SearchAsync(string jql, IReadOnlyList<string> fields, Action<JiraIssueResponse> onIssue)
+    {
+        var fieldArray = fields.ToArray();
+        string? nextPageToken = null;
+        do
+        {
+            var args = new Dictionary<string, object?>
+            {
+                ["cloudId"] = _config.CloudId,
+                ["jql"] = jql,
+                ["fields"] = fieldArray,
+                ["maxResults"] = PageSize,
+                ["responseContentFormat"] = ContentFormat,
+            };
+            if (nextPageToken != null) args["nextPageToken"] = nextPageToken;
+
+            var root = await _tools.CallToolAsync(SearchTool, args);
+            foreach (var node in IssueNodes(root))
+            {
+                var issue = node.Deserialize<JiraIssueResponse>(JsonOptions);
+                if (issue != null) onIssue(issue);
+            }
+
+            var next = NextPageToken(root);
+            nextPageToken = next == nextPageToken ? null : next; // Guard against a cursor that doesn't advance.
+        }
+        while (nextPageToken != null);
+    }
+
+    private static string FixVersionInJql(IEnumerable<string> versions)
+    {
+        var quoted = versions.Select(v => "\"" + v.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"");
+        return $"fixVersion in ({string.Join(", ", quoted)})";
+    }
+
+    private List<string> IssueFields()
+    {
+        var fields = new List<string> { "summary", "issuetype", "fixVersions", "timeoriginalestimate", "parent" };
+        if (_budgetFieldId != null) fields.Add(_budgetFieldId);
+        if (_accountFieldId != null) fields.Add(_accountFieldId);
+        return fields;
+    }
+
     public async Task<JiraIssue?> GetIssueAsync(string issueKey)
     {
-        await ResolveFieldIdsAsync();
+        await ResolveFieldIdsAsync([issueKey]);
 
         var jiraIssue = await FetchRawIssueAsync(issueKey);
         if (jiraIssue == null) return null;
@@ -95,54 +224,35 @@ public class JiraService : IDisposable
     }
 
     /// <summary>
-    /// Fetches a single Jira issue from the API and parses it into a <see cref="JiraIssue"/>
+    /// Fetches a single Jira issue with <c>getJiraIssue</c> and parses it into a <see cref="JiraIssue"/>
     /// without applying any parent-inheritance logic.
     /// </summary>
     private async Task<JiraIssue?> FetchRawIssueAsync(string issueKey)
     {
-        var fieldsParam = "summary,issuetype,fixVersions,timeoriginalestimate,parent";
-        if (_budgetFieldId != null) fieldsParam += $",{_budgetFieldId}";
-        if (_accountFieldId != null) fieldsParam += $",{_accountFieldId}";
-
-        var url = $"rest/api/3/issue/{Uri.EscapeDataString(issueKey)}?fields={fieldsParam}";
-
-        HttpResponseMessage response;
+        JsonElement root;
         try
         {
-            response = await _httpClient.GetAsync(url);
+            root = await _tools.CallToolAsync(GetIssueTool, new Dictionary<string, object?>
+            {
+                ["cloudId"] = _config.CloudId,
+                ["issueIdOrKey"] = issueKey,
+                ["fields"] = IssueFields().ToArray(),
+                ["responseContentFormat"] = ContentFormat,
+            });
         }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException(
-                $"Failed to connect to Jira API: {ex.Message}. " +
-                "Please check 'Jira:BaseUrl' in appsettings.json and your network connection.", ex);
-        }
-
-        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        catch (AtlassianToolException ex) when (ex.StatusCode == 404)
         {
             Console.WriteLine($"  Warning: Jira issue '{issueKey}' not found.");
             return null;
         }
 
-        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized ||
-            response.StatusCode == System.Net.HttpStatusCode.Forbidden)
-        {
-            throw new InvalidOperationException(
-                "Jira authentication failed. Please verify 'Jira:UserEmail' and 'Jira:ApiToken' " +
-                "in appsettings.json are correct.");
-        }
+        var node = IssueNodes(root).Cast<JsonElement?>().FirstOrDefault();
+        var issue = node?.Deserialize<JiraIssueResponse>(JsonOptions);
+        return issue == null ? null : ToJiraIssue(issue, issueKey);
+    }
 
-        if (!response.IsSuccessStatusCode)
-        {
-            var error = await response.Content.ReadAsStringAsync();
-            throw new InvalidOperationException(
-                $"Jira API returned {(int)response.StatusCode} for issue '{issueKey}': {error}");
-        }
-
-        var json = await response.Content.ReadAsStringAsync();
-        var issue = JsonSerializer.Deserialize<JiraIssueResponse>(json, JsonOptions);
-        if (issue == null) return null;
-
+    private JiraIssue ToJiraIssue(JiraIssueResponse issue, string fallbackKey)
+    {
         var budgetValue = _budgetFieldId != null
             ? ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(_budgetFieldId))
             : null;
@@ -152,7 +262,7 @@ public class JiraService : IDisposable
 
         return new JiraIssue
         {
-            Key = issue.Key ?? issueKey,
+            Key = issue.Key ?? fallbackKey,
             IssueType = issue.Fields?.Issuetype?.Name ?? string.Empty,
             Summary = issue.Fields?.Summary ?? string.Empty,
             Budget = budgetValue,
@@ -192,19 +302,18 @@ public class JiraService : IDisposable
 
     public async Task<Dictionary<string, JiraIssue?>> GetIssuesBulkAsync(IEnumerable<string> issueKeys)
     {
-        await ResolveFieldIdsAsync();
+        var keyList = issueKeys.ToList();
+        await ResolveFieldIdsAsync(keyList);
 
         var result = new Dictionary<string, JiraIssue?>(StringComparer.OrdinalIgnoreCase);
         var errorStatus = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        var keyList = issueKeys.ToList();
         int fetched = 0;
 
         PrintProgressBar(fetched, keyList.Count);
 
-        const int batchSize = 100;
-        for (int i = 0; i < keyList.Count; i += batchSize)
+        for (int i = 0; i < keyList.Count; i += KeyChunkSize)
         {
-            var batch = keyList.Skip(i).Take(batchSize).ToList();
+            var batch = keyList.Skip(i).Take(KeyChunkSize).ToList();
             await FetchRawIssuesBulkAsync(batch, result, errorStatus);
             fetched += batch.Count;
             PrintProgressBar(fetched, keyList.Count);
@@ -217,7 +326,7 @@ public class JiraService : IDisposable
 
         // Iteratively resolve the full parent chain for fix version inheritance.
         // Uses a visited set to prevent re-fetching and guard against circular references.
-        // Note: TotalEstimateSum in version reports is computed via JQL fixVersion="..", so only
+        // Note: TotalEstimateSum in version reports is computed via JQL fixVersion in (..), so only
         // issues with a Jira-assigned fix version contribute to estimates; inherited children do not.
         var parentCache = new Dictionary<string, JiraIssue?>(StringComparer.OrdinalIgnoreCase);
         var visitedParentKeys = new HashSet<string>(result.Keys, StringComparer.OrdinalIgnoreCase);
@@ -234,7 +343,8 @@ public class JiraService : IDisposable
             Console.WriteLine($"  Fetching {pendingParentKeys.Count} parent issue(s) to inherit fix versions.");
             var batchParents = new Dictionary<string, JiraIssue?>(StringComparer.OrdinalIgnoreCase);
             var parentErrors = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-            await FetchRawIssuesBulkAsync(pendingParentKeys, batchParents, parentErrors);
+            for (int i = 0; i < pendingParentKeys.Count; i += KeyChunkSize)
+                await FetchRawIssuesBulkAsync(pendingParentKeys.Skip(i).Take(KeyChunkSize).ToList(), batchParents, parentErrors);
             foreach (var kv in parentErrors)
                 Console.WriteLine($"  Warning: Parent issue '{kv.Key}' could not be fetched (status {kv.Value}); fix version will not be inherited.");
 
@@ -277,102 +387,73 @@ public class JiraService : IDisposable
     }
 
     /// <summary>
-    /// Fetches issues in bulk from the Jira API and adds the parsed results to <paramref name="target"/>.
-    /// No parent-inheritance logic is applied. Errors are recorded in <paramref name="errorStatus"/>
-    /// when provided; otherwise they are silently stored as <c>null</c> entries.
+    /// Fetches up to <see cref="KeyChunkSize"/> issues with one <c>key in (...)</c> search and adds the parsed
+    /// results to <paramref name="target"/>. No parent-inheritance logic is applied.
+    /// When Jira rejects the chunk, the keys named in the error are recorded as missing and the rest is
+    /// retried; when the error names none of them, the chunk is split in half, so the recursion always ends.
+    /// Keys that end up unfetched map to <c>null</c> and get a status in <paramref name="errorStatus"/>.
     /// </summary>
     private async Task FetchRawIssuesBulkAsync(
-        IEnumerable<string> issueKeys,
+        List<string> keys,
         Dictionary<string, JiraIssue?> target,
-        Dictionary<string, int>? errorStatus)
+        Dictionary<string, int> errorStatus)
     {
-        var fields = new List<string> { "summary", "issuetype", "fixVersions", "timeoriginalestimate", "parent" };
-        if (_budgetFieldId != null) fields.Add(_budgetFieldId);
-        if (_accountFieldId != null) fields.Add(_accountFieldId);
+        if (keys.Count == 0) return;
 
-        var requestBody = new JiraBulkFetchRequest { IssueIdsOrKeys = issueKeys.ToList(), Fields = fields };
-        var json = JsonSerializer.Serialize(requestBody, JsonOptions);
-        var content = new StringContent(json, System.Text.Encoding.UTF8, "application/json");
-
-        HttpResponseMessage response;
+        var fetched = new List<JiraIssueResponse>();
         try
         {
-            response = await _httpClient.PostAsync("rest/api/3/issue/bulkfetch", content);
+            await SearchAsync($"key in ({string.Join(", ", keys)})", IssueFields(), fetched.Add);
         }
-        catch (Exception ex)
+        catch (AtlassianToolException ex)
         {
-            throw new InvalidOperationException(
-                $"Failed to connect to Jira API: {ex.Message}. " +
-                "Please check 'Jira:BaseUrl' in appsettings.json and your network connection.", ex);
-        }
-
-        if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized ||
-            response.StatusCode == System.Net.HttpStatusCode.Forbidden)
-        {
-            throw new InvalidOperationException(
-                "Jira authentication failed. Please verify 'Jira:UserEmail' and 'Jira:ApiToken' " +
-                "in appsettings.json are correct.");
-        }
-
-        if (!response.IsSuccessStatusCode)
-        {
-            var error = await response.Content.ReadAsStringAsync();
-            throw new InvalidOperationException(
-                $"Jira API returned {(int)response.StatusCode} for bulk fetch: {error}");
-        }
-
-        var responseJson = await response.Content.ReadAsStringAsync();
-        var bulkResponse = JsonSerializer.Deserialize<JiraBulkFetchResponse>(responseJson, JsonOptions);
-
-        if (bulkResponse?.Issues != null)
-        {
-            foreach (var issue in bulkResponse.Issues)
+            var status = ex.StatusCode ?? 400;
+            var rejected = KeysNamedIn(ex.Message, keys);
+            if (rejected.Count > 0)
             {
-                if (issue.Key == null) continue;
-
-                var budgetValue = _budgetFieldId != null
-                    ? ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(_budgetFieldId))
-                    : null;
-                var accountValue = _accountFieldId != null
-                    ? ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(_accountFieldId))
-                    : null;
-
-                target[issue.Key] = new JiraIssue
-                {
-                    Key = issue.Key,
-                    IssueType = issue.Fields?.Issuetype?.Name ?? string.Empty,
-                    Summary = issue.Fields?.Summary ?? string.Empty,
-                    Budget = budgetValue,
-                    Account = accountValue,
-                    FixVersions = issue.Fields?.FixVersions?.Select(v => v.Name ?? string.Empty)
-                                      .Where(n => !string.IsNullOrEmpty(n)).ToList() ?? new(),
-                    ReleasedFixVersionNames = new HashSet<string>(
-                        issue.Fields?.FixVersions?.Where(v => v.Released && !string.IsNullOrEmpty(v.Name))
-                            .Select(v => v.Name!) ?? Enumerable.Empty<string>(),
-                        StringComparer.OrdinalIgnoreCase),
-                    Estimate = issue.Fields?.TimeOriginalEstimate.HasValue == true
-                        ? issue.Fields.TimeOriginalEstimate.Value / 3600.0
-                        : null,
-                    ParentKey = issue.Fields?.Parent?.Key
-                };
+                foreach (var key in rejected) MarkMissing(key, status);
+                await FetchRawIssuesBulkAsync(keys.Where(k => !rejected.Contains(k)).ToList(), target, errorStatus);
             }
+            else if (keys.Count == 1)
+            {
+                MarkMissing(keys[0], status);
+            }
+            else
+            {
+                var half = keys.Count / 2;
+                await FetchRawIssuesBulkAsync(keys.Take(half).ToList(), target, errorStatus);
+                await FetchRawIssuesBulkAsync(keys.Skip(half).ToList(), target, errorStatus);
+            }
+            return;
         }
 
-        if (bulkResponse?.Errors != null)
+        foreach (var issue in fetched)
         {
-            foreach (var err in bulkResponse.Errors)
-            {
-                if (err.IssueKey != null)
-                {
-                    target[err.IssueKey] = null;
-                    if (errorStatus != null)
-                        errorStatus[err.IssueKey] = err.Status;
-                }
-            }
+            if (issue.Key == null) continue;
+            target[issue.Key] = ToJiraIssue(issue, issue.Key);
+        }
+
+        // A key Jira accepted but didn't return (e.g. not visible) is reported like a missing one.
+        foreach (var key in keys.Where(k => !target.ContainsKey(k)))
+            MarkMissing(key, 404);
+
+        void MarkMissing(string key, int status)
+        {
+            target[key] = null;
+            errorStatus[key] = status;
         }
     }
 
-    // Internal response models
+    /// <summary>The keys of <paramref name="chunk"/> that a Jira error message names in single quotes, e.g. "An issue with key 'ABC-9' does not exist".</summary>
+    private static HashSet<string> KeysNamedIn(string message, IEnumerable<string> chunk)
+    {
+        var named = Regex.Matches(message, "'([^']+)'")
+            .Select(m => m.Groups[1].Value)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return chunk.Where(named.Contains).ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    // Internal response models (the MCP issue nodes have the Jira REST shape)
     private sealed class JiraIssueResponse
     {
         public string? Key { get; set; }
@@ -413,115 +494,40 @@ public class JiraService : IDisposable
         public string? Name { get; set; }
     }
 
-    private sealed class JiraFieldResponse
-    {
-        public string? Id { get; set; }
-        public string? Name { get; set; }
-    }
-
-    private sealed class JiraSearchResponse
-    {
-        public int Total { get; set; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("issues")]
-        public List<JiraIssueResponse>? Issues { get; set; }
-        [System.Text.Json.Serialization.JsonPropertyName("nextPageToken")]
-        public string? NextPageToken { get; set; }
-        [System.Text.Json.Serialization.JsonPropertyName("isLast")]
-        public bool IsLast { get; set; }
-    
-  }
-
-    private sealed class JiraBulkFetchRequest
-    {
-        [System.Text.Json.Serialization.JsonPropertyName("issueIdsOrKeys")]
-        public List<string> IssueIdsOrKeys { get; set; } = new();
-
-        [System.Text.Json.Serialization.JsonPropertyName("fields")]
-        public List<string> Fields { get; set; } = new();
-    }
-
-    private sealed class JiraBulkFetchResponse
-    {
-        [System.Text.Json.Serialization.JsonPropertyName("issues")]
-        public List<JiraIssueResponse>? Issues { get; set; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("errors")]
-        public List<JiraBulkFetchError>? Errors { get; set; }
-    }
-
-    private sealed class JiraBulkFetchError
-    {
-        [System.Text.Json.Serialization.JsonPropertyName("issueKey")]
-        public string? IssueKey { get; set; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("status")]
-        public int Status { get; set; }
-    }
-
-    private sealed class JiraSearchRequest
-    {
-        [System.Text.Json.Serialization.JsonPropertyName("jql")]
-        public string Jql { get; set; } = string.Empty;
-
-        [System.Text.Json.Serialization.JsonPropertyName("fields")]
-        public List<string> Fields { get; set; } = new();
-
-        [System.Text.Json.Serialization.JsonPropertyName("nextPageToken")]
-        public string? NextPageToken { get; set; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("maxResults")]
-        public int MaxResults { get; set; }
-    }
-
     public async Task<List<JiraIssue>> GetIssuesByFixVersionAsync(string version)
     {
-        var results = new List<JiraIssue>();
-        string? nextPageToken = null;
-        bool isLastPage = false;
-        const int maxResults = 100;
+        var grouped = await GetIssuesByFixVersionsAsync([version]);
+        return grouped.TryGetValue(version, out var issues) ? issues : new List<JiraIssue>();
+    }
 
-        do
+    /// <summary>
+    /// Fetches the issues of many fix versions with <c>fixVersion in (...)</c> searches of up to
+    /// <see cref="VersionBatchSize"/> versions, and groups each issue under every one of its own fix
+    /// versions that was requested — the same as one query per version. Every requested version is a
+    /// key, possibly with an empty list.
+    /// </summary>
+    public async Task<Dictionary<string, List<JiraIssue>>> GetIssuesByFixVersionsAsync(IEnumerable<string> versions)
+    {
+        var result = new Dictionary<string, List<JiraIssue>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var version in versions)
         {
-            var requestBody = new JiraSearchRequest
-            {
-                Jql = $"fixVersion = \"{version}\"",
-                Fields = new List<string> { "summary", "issuetype", "timeoriginalestimate" },
-                NextPageToken = nextPageToken,
-                MaxResults = maxResults
-            };
-            var requestJson = JsonSerializer.Serialize(requestBody, JsonOptions);
-            var content = new StringContent(requestJson, System.Text.Encoding.UTF8, "application/json");
+            if (version != null) result.TryAdd(version, new List<JiraIssue>());
+        }
 
-            HttpResponseMessage response;
-            try
-            {
-                response = await _httpClient.PostAsync("rest/api/3/search/jql", content);
-            }
-            catch (Exception ex)
-            {
-                throw new InvalidOperationException(
-                    $"Failed to connect to Jira API: {ex.Message}. " +
-                    "Please check 'Jira:BaseUrl' in appsettings.json and your network connection.", ex);
-            }
+        var queryable = result.Keys.Where(v => !string.IsNullOrWhiteSpace(v)).ToList();
+        var added = new HashSet<(string Version, string Key)>();
+        var fields = new List<string> { "summary", "issuetype", "fixVersions", "timeoriginalestimate" };
 
-            if (!response.IsSuccessStatusCode)
-            {
-                var error = await response.Content.ReadAsStringAsync();
-                throw new InvalidOperationException(
-                    $"Jira API returned {(int)response.StatusCode} when searching for fixVersion '{version}': {error}");
-            }
+        for (int i = 0; i < queryable.Count; i += VersionBatchSize)
+        {
+            // Only credit versions that were part of this batch's query, so an issue whose fix versions
+            // span two batches is counted once per version.
+            var batchSet = new HashSet<string>(queryable.Skip(i).Take(VersionBatchSize), StringComparer.OrdinalIgnoreCase);
 
-            var json = await response.Content.ReadAsStringAsync();
-            var searchResult = JsonSerializer.Deserialize<JiraSearchResponse>(json, JsonOptions);
-            if (searchResult?.Issues == null) break;
-            isLastPage = searchResult.IsLast;
-            nextPageToken = searchResult.NextPageToken;
-      
-            foreach (var issue in searchResult.Issues)
+            await SearchAsync(FixVersionInJql(batchSet), fields, issue =>
             {
-                if (issue.Key == null) continue;
-                results.Add(new JiraIssue
+                if (issue.Key == null) return;
+                var jiraIssue = new JiraIssue
                 {
                     Key = issue.Key,
                     IssueType = issue.Fields?.Issuetype?.Name ?? string.Empty,
@@ -529,13 +535,18 @@ public class JiraService : IDisposable
                     Estimate = issue.Fields?.TimeOriginalEstimate.HasValue == true
                         ? issue.Fields.TimeOriginalEstimate.Value / 3600.0
                         : null
-                });
-            }
+                };
 
+                foreach (var name in issue.Fields?.FixVersions?.Select(v => v.Name) ?? [])
+                {
+                    if (name == null || !batchSet.TryGetValue(name, out var requested)) continue;
+                    if (added.Add((requested, issue.Key)))
+                        result[requested].Add(jiraIssue);
+                }
+            });
         }
-        while (!isLastPage);
 
-        return results;
+        return result;
     }
 
     /// <summary>
@@ -548,12 +559,14 @@ public class JiraService : IDisposable
         IEnumerable<JiraIssue> issues)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var issueList = issues.ToList();
 
-        await ResolveFieldIdsAsync();
+        await ResolveFieldIdsAsync(issueList.Select(i => i.Key)
+            .Concat(issueList.Select(i => i.ParentKey ?? string.Empty)));
         if (_budgetFieldId == null)
             return result; // Budget field unknown - nothing to inherit.
 
-        var starting = issues.Where(i => !string.IsNullOrEmpty(i.ParentKey)).ToList();
+        var starting = issueList.Where(i => !string.IsNullOrEmpty(i.ParentKey)).ToList();
         if (starting.Count == 0) return result;
 
         var ancestors = new Dictionary<string, JiraIssue?>(StringComparer.OrdinalIgnoreCase);
@@ -571,9 +584,8 @@ public class JiraService : IDisposable
             var batchParents = new Dictionary<string, JiraIssue?>(StringComparer.OrdinalIgnoreCase);
             var parentErrors = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
 
-            const int batchSize = 100;
-            for (int i = 0; i < pending.Count; i += batchSize)
-                await FetchRawIssuesBulkAsync(pending.Skip(i).Take(batchSize), batchParents, parentErrors);
+            for (int i = 0; i < pending.Count; i += KeyChunkSize)
+                await FetchRawIssuesBulkAsync(pending.Skip(i).Take(KeyChunkSize).ToList(), batchParents, parentErrors);
 
             foreach (var kv in parentErrors)
                 Console.WriteLine($"  Warning: Parent issue '{kv.Key}' could not be fetched (status {kv.Value}); budget will not be inherited.");
@@ -634,14 +646,16 @@ public class JiraService : IDisposable
     /// and returns a map of fix version name → budget. This lets issues inherit the budget of the
     /// leverance task that shares their fix version, even when that leverance task has no Toggl time
     /// logged and is therefore not part of the bulk-fetched issue set.
+    /// Needs the Budget field ID, which is resolved from issue keys by an earlier call
+    /// (<see cref="GetIssuesBulkAsync"/>); without it the map is empty.
     /// </summary>
     public async Task<Dictionary<string, string>> GetLeveranceBudgetsByFixVersionAsync(IEnumerable<string> versions)
     {
         var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
 
-        await ResolveFieldIdsAsync();
         if (_budgetFieldId == null)
             return result; // Budget field unknown — nothing to inherit.
+        var budgetFieldId = _budgetFieldId;
 
         var distinctVersions = versions
             .Where(v => !string.IsNullOrWhiteSpace(v))
@@ -649,55 +663,17 @@ public class JiraService : IDisposable
             .ToList();
 
         // Query in batches with `fixVersion in (...)` so many versions resolve in few requests.
-        const int batchSize = 50;
-        for (int i = 0; i < distinctVersions.Count; i += batchSize)
+        for (int i = 0; i < distinctVersions.Count; i += VersionBatchSize)
         {
-            var batch = distinctVersions.Skip(i).Take(batchSize).ToList();
-            var quoted = batch.Select(v => "\"" + v.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"");
-            var jql = $"fixVersion in ({string.Join(", ", quoted)}) AND issuetype = Delivery";
+            var batch = distinctVersions.Skip(i).Take(VersionBatchSize).ToList();
+            var jql = $"{FixVersionInJql(batch)} AND issuetype = Delivery";
 
-            string? nextPageToken = null;
-            bool isLastPage;
-            do
+            try
             {
-                var requestBody = new JiraSearchRequest
+                await SearchAsync(jql, ["issuetype", "fixVersions", budgetFieldId], issue =>
                 {
-                    Jql = jql,
-                    Fields = new List<string> { "issuetype", "fixVersions", _budgetFieldId },
-                    NextPageToken = nextPageToken,
-                    MaxResults = 100
-                };
-                var requestJson = JsonSerializer.Serialize(requestBody, JsonOptions);
-                var content = new StringContent(requestJson, System.Text.Encoding.UTF8, "application/json");
-
-                HttpResponseMessage response;
-                try
-                {
-                    response = await _httpClient.PostAsync("rest/api/3/search/jql", content);
-                }
-                catch (Exception ex)
-                {
-                    throw new InvalidOperationException(
-                        $"Failed to connect to Jira API: {ex.Message}. " +
-                        "Please check 'Jira:BaseUrl' in appsettings.json and your network connection.", ex);
-                }
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    var error = await response.Content.ReadAsStringAsync();
-                    Console.Error.WriteLine(
-                        $"  Warning: Jira returned {(int)response.StatusCode} when looking up leverance budgets: {error}");
-                    break;
-                }
-
-                var json = await response.Content.ReadAsStringAsync();
-                var searchResult = JsonSerializer.Deserialize<JiraSearchResponse>(json, JsonOptions);
-                if (searchResult?.Issues == null) break;
-
-                foreach (var issue in searchResult.Issues)
-                {
-                    var budget = ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(_budgetFieldId));
-                    if (string.IsNullOrWhiteSpace(budget)) continue;
+                    var budget = ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(budgetFieldId));
+                    if (string.IsNullOrWhiteSpace(budget)) return;
 
                     // Map every fix version of the leverance task (first one wins per version).
                     var fixVersionNames = issue.Fields?.FixVersions?
@@ -709,12 +685,13 @@ public class JiraService : IDisposable
                         if (!result.ContainsKey(name))
                             result[name] = budget!;
                     }
-                }
-
-                isLastPage = searchResult.IsLast;
-                nextPageToken = searchResult.NextPageToken;
+                });
             }
-            while (!isLastPage);
+            catch (AtlassianToolException ex)
+            {
+                Console.Error.WriteLine(
+                    $"  Warning: Jira returned {StatusText(ex)} when looking up leverance budgets: {ex.Message}");
+            }
         }
 
         return result;
@@ -739,53 +716,15 @@ public class JiraService : IDisposable
 
         var sinceStr = updatedSince.ToString("yyyy-MM-dd");
 
-        const int batchSize = 50;
-        for (int i = 0; i < distinctVersions.Count; i += batchSize)
+        for (int i = 0; i < distinctVersions.Count; i += VersionBatchSize)
         {
-            var batch = distinctVersions.Skip(i).Take(batchSize).ToList();
+            var batch = distinctVersions.Skip(i).Take(VersionBatchSize).ToList();
             var batchSet = new HashSet<string>(batch, StringComparer.OrdinalIgnoreCase);
-            var quoted = batch.Select(v => "\"" + v.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\"");
-            var jql = $"fixVersion in ({string.Join(", ", quoted)}) AND updated >= \"{sinceStr}\"";
+            var jql = $"{FixVersionInJql(batch)} AND updated >= \"{sinceStr}\"";
 
-            string? nextPageToken = null;
-            bool isLastPage;
-            do
+            try
             {
-                var requestBody = new JiraSearchRequest
-                {
-                    Jql = jql,
-                    Fields = new List<string> { "fixVersions" },
-                    NextPageToken = nextPageToken,
-                    MaxResults = 100
-                };
-                var requestJson = JsonSerializer.Serialize(requestBody, JsonOptions);
-                var content = new StringContent(requestJson, System.Text.Encoding.UTF8, "application/json");
-
-                HttpResponseMessage response;
-                try
-                {
-                    response = await _httpClient.PostAsync("rest/api/3/search/jql", content);
-                }
-                catch (Exception ex)
-                {
-                    throw new InvalidOperationException(
-                        $"Failed to connect to Jira API: {ex.Message}. " +
-                        "Please check 'Jira:BaseUrl' in appsettings.json and your network connection.", ex);
-                }
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    var error = await response.Content.ReadAsStringAsync();
-                    Console.Error.WriteLine(
-                        $"  Warning: Jira returned {(int)response.StatusCode} when checking recently updated issues: {error}");
-                    break;
-                }
-
-                var json = await response.Content.ReadAsStringAsync();
-                var searchResult = JsonSerializer.Deserialize<JiraSearchResponse>(json, JsonOptions);
-                if (searchResult?.Issues == null) break;
-
-                foreach (var issue in searchResult.Issues)
+                await SearchAsync(jql, ["fixVersions"], issue =>
                 {
                     var fixVersionNames = issue.Fields?.FixVersions?
                         .Select(v => v.Name ?? string.Empty)
@@ -797,16 +736,20 @@ public class JiraService : IDisposable
                         if (batchSet.Contains(name))
                             result.Add(name);
                     }
-                }
-
-                isLastPage = searchResult.IsLast;
-                nextPageToken = searchResult.NextPageToken;
+                });
             }
-            while (!isLastPage);
+            catch (AtlassianToolException ex)
+            {
+                Console.Error.WriteLine(
+                    $"  Warning: Jira returned {StatusText(ex)} when checking recently updated issues: {ex.Message}");
+            }
         }
 
         return result;
     }
+
+    private static string StatusText(AtlassianToolException ex) =>
+        ex.StatusCode?.ToString() ?? "an error";
 
     private static void PrintProgressBar(int current, int total)
     {
@@ -815,6 +758,4 @@ public class JiraService : IDisposable
         var bar = new string('█', filled) + new string('░', barWidth - filled);
         Console.WriteLine($"  Fetching Jira issues: [{bar}] {current}/{total}");
     }
-
-    public void Dispose() => _httpClient.Dispose();
 }
