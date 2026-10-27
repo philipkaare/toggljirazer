@@ -90,6 +90,55 @@ public class AtlassianSignInControlTests : IDisposable
         Assert.Equal("https://abc.atlassian.net", control.SiteUrl);
     }
 
+    [AvaloniaFact]
+    public void Single_site_is_auto_selected_when_none_is_configured()
+    {
+        var control = new AtlassianSignInControl();
+
+        control.ShowSites([Sites[1]]);
+
+        Assert.Equal("c2", control.CloudId);
+        Assert.Equal("https://xyz.atlassian.net", control.SiteUrl);
+    }
+
+    [AvaloniaFact]
+    public void Single_site_is_auto_selected_when_the_configured_site_is_not_accessible()
+    {
+        var control = new AtlassianSignInControl();
+        control.SetSelection("gone", "https://gone.atlassian.net");
+
+        control.ShowSites([Sites[1]]);
+
+        Assert.Equal("c2", control.CloudId);
+    }
+
+    [AvaloniaFact]
+    public void No_site_is_selected_among_several_when_none_is_configured()
+    {
+        var control = new AtlassianSignInControl();
+
+        control.ShowSites(Sites);
+
+        Assert.Null(control.SiteComboBox.SelectedItem);
+        Assert.Equal("", control.CloudId);
+    }
+
+    [AvaloniaFact]
+    public async Task Sign_in_failure_is_not_overwritten_by_an_in_flight_status_check()
+    {
+        var control = new AtlassianSignInControl();
+        var check = new TaskCompletionSource<IReadOnlyList<AtlassianSite>?>();
+        control.LoadSitesIfSignedIn = () => check.Task;
+
+        var refresh = control.RefreshStatusAsync();
+        control.ShowSignInFailed("Sign-in failed: boom");
+        check.SetResult(Sites);
+        await refresh;
+
+        Assert.Equal("Sign-in failed: boom", control.StatusText.Text);
+        Assert.Equal("Sign in with Atlassian", control.SignInButton.Content);
+    }
+
     [Fact]
     public async Task SignOutAsync_deletes_stored_tokens()
     {

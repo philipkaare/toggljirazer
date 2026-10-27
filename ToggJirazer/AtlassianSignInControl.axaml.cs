@@ -24,7 +24,11 @@ public partial class AtlassianSignInControl : UserControl
     public AtlassianSignInControl()
     {
         InitializeComponent();
+        LoadSitesIfSignedIn = LoadSitesFromMcpAsync;
     }
+
+    /// <summary>The check behind <see cref="RefreshStatusAsync"/>: the sites when signed in, otherwise null. Replaceable by tests.</summary>
+    internal Func<Task<IReadOnlyList<AtlassianSite>?>> LoadSitesIfSignedIn { get; set; }
 
     /// <summary>Raised after the user signs in or out from this control.</summary>
     public event EventHandler? SignInChanged;
@@ -52,17 +56,9 @@ public partial class AtlassianSignInControl : UserControl
     public async Task RefreshStatusAsync()
     {
         var generation = ++_refreshGeneration;
-        if (_mcp == null)
-        {
-            ShowSignedOut(NotSignedInText);
-            return;
-        }
-
         try
         {
-            IReadOnlyList<AtlassianSite>? sites = null;
-            if (await _mcp.IsSignedInAsync(CancellationToken.None))
-                sites = await _mcp.GetSitesAsync(CancellationToken.None);
+            var sites = await LoadSitesIfSignedIn();
 
             if (generation != _refreshGeneration) return; // a newer check has taken over
 
@@ -83,13 +79,23 @@ public partial class AtlassianSignInControl : UserControl
         }
     }
 
-    /// <summary>Fills the Site dropdown and re-applies the configured selection.</summary>
+    private async Task<IReadOnlyList<AtlassianSite>?> LoadSitesFromMcpAsync()
+    {
+        if (_mcp == null || !await _mcp.IsSignedInAsync(CancellationToken.None)) return null;
+        return await _mcp.GetSitesAsync(CancellationToken.None);
+    }
+
+    /// <summary>
+    /// Fills the Site dropdown and re-applies the configured selection. When the configured site isn't
+    /// among them (or none is configured) and there is exactly one site, that site is selected.
+    /// </summary>
     internal void ShowSites(IReadOnlyList<AtlassianSite> sites)
     {
-        SiteComboBox.ItemsSource = sites
+        var items = sites
             .Select(site => new ComboBoxItem { Content = $"{site.Name} ({site.Url})", Tag = site })
             .ToList();
-        SiteComboBox.SelectedItem = FindItem(_cloudId, _siteUrl);
+        SiteComboBox.ItemsSource = items;
+        SiteComboBox.SelectedItem = FindItem(_cloudId, _siteUrl) ?? (items.Count == 1 ? items[0] : null);
         UpdateSignedInStatus();
     }
 
@@ -104,6 +110,13 @@ public partial class AtlassianSignInControl : UserControl
     }
 
     private static string NormalizeUrl(string url) => url.Trim().TrimEnd('/').ToLowerInvariant();
+
+    /// <summary>Shows a failed sign-in or sign-out; a status check still in flight can no longer overwrite it.</summary>
+    internal void ShowSignInFailed(string status)
+    {
+        _refreshGeneration++;
+        ShowSignedOut(status);
+    }
 
     private void ShowSignedOut(string status)
     {
@@ -156,7 +169,7 @@ public partial class AtlassianSignInControl : UserControl
         }
         catch (Exception ex)
         {
-            ShowSignedOut(signingOut ? $"Sign-out failed: {ex.Message}" : $"Sign-in failed: {ex.Message}");
+            ShowSignInFailed(signingOut ? $"Sign-out failed: {ex.Message}" : $"Sign-in failed: {ex.Message}");
         }
         finally
         {
