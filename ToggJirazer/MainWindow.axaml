@@ -130,23 +130,26 @@
         </TabControl>
 
         <!-- Buttons and progress bar -->
-        <Grid Grid.Row="1" Margin="0,0,0,10" ColumnDefinitions="Auto,Auto,Auto,*" RowDefinitions="Auto,Auto">
-            <Button Grid.Row="0" Grid.Column="0" x:Name="SaveButton"
+        <Grid Grid.Row="1" Margin="0,0,0,10" ColumnDefinitions="Auto,Auto,Auto,Auto,*" RowDefinitions="Auto,Auto">
+            <Button Grid.Row="0" Grid.Column="0" x:Name="SetupButton"
+                    Content="Setup…" Margin="0,0,8,0"
+                    Click="Setup_Click"/>
+            <Button Grid.Row="0" Grid.Column="1" x:Name="SaveButton"
                     Content="Save Settings" Margin="0,0,8,0"
                     Click="SaveSettings_Click"/>
-            <Button Grid.Row="0" Grid.Column="1" x:Name="RunButton"
+            <Button Grid.Row="0" Grid.Column="2" x:Name="RunButton"
                     Content="Generate Report" Margin="0,0,8,0"
                     Click="RunButton_Click"/>
-            <Button Grid.Row="0" Grid.Column="2" x:Name="OpenReportButton"
+            <Button Grid.Row="0" Grid.Column="3" x:Name="OpenReportButton"
                     Content="Open Report" IsEnabled="False"
                     Click="OpenReport_Click"/>
 
-            <CheckBox Grid.Row="0" Grid.Column="3" x:Name="EnableCacheCheckBox"
+            <CheckBox Grid.Row="0" Grid.Column="4" x:Name="EnableCacheCheckBox"
                       Content="Cache requests (1 day)" IsChecked="True"
                       VerticalAlignment="Center" HorizontalAlignment="Right"
                       ToolTip.Tip="Reuse previously fetched Toggl/Jira data for up to 1 day instead of requesting it again."/>
 
-            <ProgressBar Grid.Row="1" Grid.ColumnSpan="4"
+            <ProgressBar Grid.Row="1" Grid.ColumnSpan="5"
                          x:Name="ProgressBar"
                          Height="20" Margin="0,8,0,0"
                          Minimum="0" Maximum="100" Value="0"/>
