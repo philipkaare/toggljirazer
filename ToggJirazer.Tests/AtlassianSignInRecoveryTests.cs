@@ -125,6 +125,31 @@ public class AtlassianSignInRecoveryTests : IDisposable
         Assert.Equal("old-client", store.ClientRegistration?.ClientId);
     }
 
+    public static TheoryData<Exception> ServerFailures() => new()
+    {
+        new AtlassianToolException("Internal server error", statusCode: 500),
+        new AtlassianToolException("Bad gateway", statusCode: 502),
+        new HttpRequestException("Service unavailable", null, System.Net.HttpStatusCode.ServiceUnavailable),
+    };
+
+    [Theory]
+    [MemberData(nameof(ServerFailures))]
+    public async Task Server_or_transport_5xx_is_not_retried_and_reports_trouble(Exception failure)
+    {
+        var store = await StoreWithTokensAndRegistrationAsync();
+        var attempts = 0;
+
+        var thrown = await Assert.ThrowsAnyAsync<Exception>(() => AtlassianMcp.SignInWithRecoveryAsync(store, () =>
+        {
+            attempts++;
+            throw failure;
+        }));
+
+        Assert.Equal(1, attempts); // no second browser open
+        Assert.Equal("Atlassian is having trouble right now — try again in a moment.", thrown.Message);
+        Assert.Equal("old-client", store.ClientRegistration?.ClientId);
+    }
+
     [Fact]
     public void Callback_access_denied_aborts_sign_in()
     {

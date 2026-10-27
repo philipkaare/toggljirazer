@@ -64,7 +64,8 @@ public sealed class AtlassianMcp : IAsyncDisposable
     /// Sign-in is only offered when the stored sign-in doesn't work, so its tokens are dropped first.
     /// When the attempt then fails with an Atlassian error while a persisted client registration was
     /// used (Atlassian may have dropped that client), the registration is dropped too and the attempt
-    /// is repeated once with a newly registered client. A user abort or a network error is not retried.
+    /// is repeated once with a newly registered client. A user abort or a network error is not retried; a
+    /// 5xx (tool or transport) is not retried either and surfaces as <see cref="ServerTroubleMessage"/>.
     /// </summary>
     internal static async Task SignInWithRecoveryAsync(AtlassianTokenStore store, Func<Task> attempt)
     {
@@ -72,18 +73,41 @@ public sealed class AtlassianMcp : IAsyncDisposable
         var usedPersistedRegistration = store.ClientRegistration != null;
         try
         {
-            await attempt();
+            try
+            {
+                await attempt();
+            }
+            catch (Exception ex) when (usedPersistedRegistration && IsRegistrationSuspect(ex))
+            {
+                store.ClearTokens();
+                store.ClientRegistration = null;
+                await attempt();
+            }
         }
-        catch (Exception ex) when (usedPersistedRegistration && IsRegistrationSuspect(ex))
+        catch (Exception ex) when (ServerStatus(ex) is { } status)
         {
-            store.ClearTokens();
-            store.ClientRegistration = null;
-            await attempt();
+            // Atlassian's side is failing: a new client registration (and a second browser) wouldn't help.
+            throw new AtlassianToolException(ServerTroubleMessage, status);
         }
     }
 
+    internal const string ServerTroubleMessage = "Atlassian is having trouble right now — try again in a moment.";
+
+    /// <summary>
+    /// A stale registration shows up as an auth error the user didn't cause, or as a tool/protocol error.
+    /// A 5xx says Atlassian itself is failing, so it is not a reason to register a new client.
+    /// </summary>
     private static bool IsRegistrationSuspect(Exception ex) =>
-        ex is AtlassianAuthException { AbortsSignIn: false } or AtlassianToolException;
+        ex is AtlassianAuthException { AbortsSignIn: false }
+        || ex is AtlassianToolException tool && ServerStatus(tool) == null;
+
+    /// <summary>The 5xx status of a tool error or HTTP transport error, otherwise <c>null</c>.</summary>
+    private static int? ServerStatus(Exception ex) => ex switch
+    {
+        AtlassianToolException { StatusCode: >= 500 and < 600 } tool => tool.StatusCode,
+        HttpRequestException { StatusCode: { } code } when (int)code is >= 500 and < 600 => (int)code,
+        _ => null,
+    };
 
     /// <summary>Signs out: deletes the stored tokens and client registration and drops the cached connection.</summary>
     public async Task SignOutAsync()
