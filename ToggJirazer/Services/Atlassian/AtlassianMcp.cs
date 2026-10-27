@@ -64,11 +64,16 @@ public sealed class AtlassianMcp : IAsyncDisposable
     /// Explicit interactive sign-in — the only place a browser opens. Recovers from a stale stored sign-in
     /// (see <see cref="SignInWithRecoveryAsync"/>).
     /// </summary>
-    public async Task SignInAsync(CancellationToken ct)
+    /// <param name="ct">Cancels the sign-in, including the wait for the browser; the callback listener stops at once.</param>
+    /// <param name="showAuthorizationUri">
+    /// Receives the authorization URL (possibly on a background thread) so it can be shown for copying in
+    /// case the browser didn't open.
+    /// </param>
+    public async Task SignInAsync(CancellationToken ct, Action<Uri>? showAuthorizationUri = null)
     {
         await SignInWithRecoveryAsync(_store, async () =>
         {
-            await using var connection = await ConnectAsync(interactive: true, ct);
+            await using var connection = await ConnectAsync(interactive: true, ct, showAuthorizationUri);
             // Connecting authorizes the session; a tool call proves the sign-in actually works.
             await CallAsync(connection.Client, SitesTool, NoArguments, ct);
         });
@@ -263,7 +268,7 @@ public sealed class AtlassianMcp : IAsyncDisposable
         }
     }
 
-    private async Task<Connection> ConnectAsync(bool interactive, CancellationToken ct)
+    private async Task<Connection> ConnectAsync(bool interactive, CancellationToken ct, Action<Uri>? showAuthorizationUri = null)
     {
         var registration = _store.ClientRegistration;
         var oauth = new ClientOAuthOptions
@@ -283,8 +288,8 @@ public sealed class AtlassianMcp : IAsyncDisposable
                 },
             },
             AuthorizationCallbackHandler = interactive
-                ? AuthorizeInBrowserAsync
-                : (_, _) => throw new AtlassianAuthException("Not signed in"),
+                ? (context, requestCt) => AuthorizeInBrowserAsync(context, showAuthorizationUri, ct, requestCt)
+                :(_, _) => throw new AtlassianAuthException("Not signed in"),
         };
 
         var transport = new HttpClientTransport(new HttpClientTransportOptions
@@ -313,13 +318,59 @@ public sealed class AtlassianMcp : IAsyncDisposable
         }
     }
 
-    private async Task<AuthorizationResult?> AuthorizeInBrowserAsync(AuthorizationCallbackContext context, CancellationToken ct)
+    private async Task<AuthorizationResult?> AuthorizeInBrowserAsync(
+        AuthorizationCallbackContext context, Action<Uri>? showUri, CancellationToken signInCt, CancellationToken requestCt)
     {
-        // Start listening before the browser opens so the redirect can't arrive too early.
-        var callback = new OAuthCallbackListener().WaitForCallbackAsync(SignInTimeout, ct);
-        _openBrowser(context.AuthorizationUri);
-        var (code, state, iss) = await callback;
+        var (code, state, iss) = await AuthorizeAsync(context.AuthorizationUri, _openBrowser, showUri, SignInTimeout, signInCt, requestCt);
         return new AuthorizationResult { Code = code, State = state, Iss = iss };
+    }
+
+    /// <summary>
+    /// Listens for the OAuth redirect, shows the authorization URL (<paramref name="showUri"/>) and opens it in
+    /// the browser. When the browser can't be opened, the wait goes on only if the user can cancel it
+    /// (<paramref name="ct"/> is cancellable) — they can paste the shown URL into a browser themselves.
+    /// Whenever this method fails or is cancelled, the listener has been stopped (port freed) and its
+    /// receive task observed before it returns.
+    /// </summary>
+    internal static async Task<(string Code, string? State, string? Iss)> AuthorizeAsync(
+        Uri authorizationUri, Action<Uri> openBrowser, Action<Uri>? showUri, TimeSpan timeout,
+        CancellationToken ct, CancellationToken requestCt = default)
+    {
+        using var listening = CancellationTokenSource.CreateLinkedTokenSource(ct, requestCt);
+        // Start listening before the browser opens so the redirect can't arrive too early.
+        var callback = new OAuthCallbackListener().WaitForCallbackAsync(timeout, listening.Token);
+        try
+        {
+            showUri?.Invoke(authorizationUri);
+            try
+            {
+                openBrowser(authorizationUri);
+            }
+            catch (Exception) when (ct.CanBeCanceled)
+            {
+                // Keep waiting: the URL is shown and the user can open it or cancel.
+            }
+
+            return await callback;
+        }
+        catch
+        {
+            await StopListeningAsync(listening, callback);
+            throw;
+        }
+    }
+
+    private static async Task StopListeningAsync(CancellationTokenSource listening, Task callback)
+    {
+        listening.Cancel();
+        try
+        {
+            await callback;
+        }
+        catch
+        {
+            // Observed: the caller reports its own failure.
+        }
     }
 
     /// <summary>
