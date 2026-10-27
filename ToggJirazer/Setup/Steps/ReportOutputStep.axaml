@@ -1,0 +1,17 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="ToggJirazer.Setup.Steps.ReportOutputStep">
+
+    <Grid ColumnDefinitions="120,*,Auto" RowDefinitions="Auto,Auto">
+        <Label Grid.Row="0" Grid.Column="0" Content="Output file:"/>
+        <TextBox Grid.Row="0" Grid.Column="1" x:Name="ReportOutputFile" Margin="0,3,4,3"/>
+        <Button Grid.Row="0" Grid.Column="2" Content="Browse…" Click="Browse_Click"/>
+
+        <Label Grid.Row="1" Grid.Column="0" Content="Format:"/>
+        <ComboBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" x:Name="ReportFormat"
+                  SelectionChanged="ReportFormat_SelectionChanged">
+            <ComboBoxItem Content="xlsx"/>
+            <ComboBoxItem Content="csv"/>
+        </ComboBox>
+    </Grid>
+</UserControl>

@@ -58,7 +58,7 @@ public class SetupWizardWindowTests : IDisposable
                 : () => new TogglSetupService(new FakeHttpHandler(toggl ?? TogglApi)),
             listFieldNames ?? ((_, _) => Task.FromResult<IReadOnlyList<string>>(["Account", "Budget"])));
         wizard.OpenUrl = _ => throw new InvalidOperationException("Tests never open a browser.");
-        wizard.JiraSignIn.LoadSitesIfSignedIn = () => Task.FromResult<IReadOnlyList<AtlassianSite>?>(OneSite);
+        wizard.JiraSignInStep.JiraSignIn.LoadSitesIfSignedIn = () => Task.FromResult<IReadOnlyList<AtlassianSite>?>(OneSite);
         return wizard;
     }
 
@@ -94,13 +94,13 @@ public class SetupWizardWindowTests : IDisposable
         var wizard = CreateWizard(new AppConfig(), _ => FakeHttpHandler.Json("{}", HttpStatusCode.Forbidden));
         wizard.Show();
         await wizard.NextAsync();
-        wizard.TogglEmail.Text = "ann@x";
-        wizard.TogglPassword.Text = "secret";
+        wizard.TogglSignInStep.TogglEmail.Text = "ann@x";
+        wizard.TogglSignInStep.TogglPassword.Text = "secret";
 
-        await wizard.SignInToTogglAsync();
+        await wizard.TogglSignInStep.SignInToTogglAsync();
 
-        Assert.Equal(WrongPassword, wizard.TogglStatusText.Text);
-        Assert.True(string.IsNullOrEmpty(wizard.TogglPassword.Text));
+        Assert.Equal(WrongPassword, wizard.TogglSignInStep.TogglStatusText.Text);
+        Assert.True(string.IsNullOrEmpty(wizard.TogglSignInStep.TogglPassword.Text));
         Assert.Equal("", wizard.State.Draft.Toggl.ApiToken);
         Assert.False(wizard.NextButton.IsEnabled);
     }
@@ -111,14 +111,14 @@ public class SetupWizardWindowTests : IDisposable
         var wizard = CreateWizard(new AppConfig());
         wizard.Show();
         await wizard.NextAsync();
-        wizard.TogglEmail.Text = "ann@x";
-        wizard.TogglPassword.Text = "secret";
+        wizard.TogglSignInStep.TogglEmail.Text = "ann@x";
+        wizard.TogglSignInStep.TogglPassword.Text = "secret";
 
-        await wizard.SignInToTogglAsync();
+        await wizard.TogglSignInStep.SignInToTogglAsync();
 
-        Assert.Equal("Signed in as Ann Example", wizard.TogglSignedInText.Text);
-        Assert.True(wizard.TogglSignedInPanel.IsVisible);
-        Assert.True(string.IsNullOrEmpty(wizard.TogglPassword.Text));
+        Assert.Equal("Signed in as Ann Example", wizard.TogglSignInStep.TogglSignedInText.Text);
+        Assert.True(wizard.TogglSignInStep.TogglSignedInPanel.IsVisible);
+        Assert.True(string.IsNullOrEmpty(wizard.TogglSignInStep.TogglPassword.Text));
         Assert.Equal("tok", wizard.State.Draft.Toggl.ApiToken);
         Assert.True(wizard.NextButton.IsEnabled);
     }
@@ -132,12 +132,12 @@ public class SetupWizardWindowTests : IDisposable
         wizard.Show();
         await wizard.NextAsync();
 
-        wizard.ShowTokenEntry();
-        wizard.TogglTokenBox.Text = " pasted ";
-        await wizard.CheckTogglTokenAsync();
+        wizard.TogglSignInStep.ShowTokenEntry();
+        wizard.TogglSignInStep.TogglTokenBox.Text = " pasted ";
+        await wizard.TogglSignInStep.CheckTogglTokenAsync();
 
         Assert.Equal("https://track.toggl.com/profile", opened);
-        Assert.Equal("Signed in as Ann Example", wizard.TogglSignedInText.Text);
+        Assert.Equal("Signed in as Ann Example", wizard.TogglSignInStep.TogglSignedInText.Text);
         Assert.Equal("tok", wizard.State.Draft.Toggl.ApiToken);
     }
 
@@ -168,7 +168,7 @@ public class SetupWizardWindowTests : IDisposable
         await AdvanceToAsync(wizard, SetupStep.TogglProject);
         Dispatcher.UIThread.RunJobs();
 
-        Assert.Contains("Could not load", wizard.ProjectStatusText.Text);
+        Assert.Contains("Could not load", wizard.TogglProjectStep.ProjectStatusText.Text);
         Assert.False(wizard.NextButton.IsEnabled);
     }
 
@@ -187,13 +187,13 @@ public class SetupWizardWindowTests : IDisposable
         await AdvanceToAsync(wizard, SetupStep.JiraFields);
 
         Assert.Equal(1, calls);
-        Assert.Equal("Old budget (current)", wizard.BudgetCombo.SelectedItem);
+        Assert.Equal("Old budget (current)", wizard.JiraFieldsStep.BudgetCombo.SelectedItem);
         // An empty saved name means "(none)" was chosen; it is not replaced by the "Account" default.
-        Assert.Equal("(none)", wizard.AccountCombo.SelectedItem);
+        Assert.Equal("(none)", wizard.JiraFieldsStep.AccountCombo.SelectedItem);
         Assert.Equal("Old budget", wizard.State.Draft.Jira.BudgetFieldName);
         Assert.Equal("", wizard.State.Draft.Jira.AccountFieldName);
 
-        wizard.BudgetCombo.SelectedItem = "(none)";
+        wizard.JiraFieldsStep.BudgetCombo.SelectedItem = "(none)";
         Assert.Equal("", wizard.State.Draft.Jira.BudgetFieldName);
     }
 
@@ -204,11 +204,11 @@ public class SetupWizardWindowTests : IDisposable
         wizard.Show();
         await AdvanceToAsync(wizard, SetupStep.JiraFields);
 
-        wizard.BudgetCombo.SelectedItem = "(none)";
+        wizard.JiraFieldsStep.BudgetCombo.SelectedItem = "(none)";
         await wizard.NextAsync();
         await wizard.BackAsync();
 
-        Assert.Equal("(none)", wizard.BudgetCombo.SelectedItem);
+        Assert.Equal("(none)", wizard.JiraFieldsStep.BudgetCombo.SelectedItem);
         Assert.Equal("", wizard.State.Draft.Jira.BudgetFieldName);
     }
 
@@ -237,18 +237,18 @@ public class SetupWizardWindowTests : IDisposable
         Assert.Equal(1, held.PendingCount);
         Assert.False(wizard.NextButton.IsEnabled);
         Assert.False(wizard.BackButton.IsEnabled);
-        Assert.False(wizard.UseDifferentAccountLink.IsEnabled);
+        Assert.False(wizard.TogglSignInStep.UseDifferentAccountLink.IsEnabled);
         held.ReleaseAll();
         await entering;
-        Assert.Equal("Signed in as Ann", wizard.TogglSignedInText.Text);
+        Assert.Equal("Signed in as Ann", wizard.TogglSignInStep.TogglSignedInText.Text);
         Assert.True(wizard.NextButton.IsEnabled);
-        Assert.True(wizard.UseDifferentAccountLink.IsEnabled);
+        Assert.True(wizard.TogglSignInStep.UseDifferentAccountLink.IsEnabled);
 
         // Signing in as someone else: Next must wait for Toggl's answer.
-        wizard.UseDifferentAccountLink.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
-        wizard.TogglEmail.Text = "bob@x";
-        wizard.TogglPassword.Text = "pw";
-        var signingIn = wizard.SignInToTogglAsync();
+        wizard.TogglSignInStep.UseDifferentAccountLink.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        wizard.TogglSignInStep.TogglEmail.Text = "bob@x";
+        wizard.TogglSignInStep.TogglPassword.Text = "pw";
+        var signingIn = wizard.TogglSignInStep.SignInToTogglAsync();
         Assert.Equal(1, held.PendingCount);
         Assert.False(wizard.NextButton.IsEnabled);
         Assert.False(wizard.BackButton.IsEnabled);
@@ -264,9 +264,9 @@ public class SetupWizardWindowTests : IDisposable
     public async Task Navigation_and_cancel_disabled_while_atlassian_sign_in_waits()
     {
         var wizard = CreateWizard(CompleteConfig());
-        wizard.JiraSignIn.LoadSitesIfSignedIn = () => Task.FromResult<IReadOnlyList<AtlassianSite>?>(null);
+        wizard.JiraSignInStep.JiraSignIn.LoadSitesIfSignedIn = () => Task.FromResult<IReadOnlyList<AtlassianSite>?>(null);
         var cancelled = new TaskCompletionSource();
-        wizard.JiraSignIn.SignIn = async (ct, _) =>
+        wizard.JiraSignInStep.JiraSignIn.SignIn = async (ct, _) =>
         {
             try { await Task.Delay(Timeout.Infinite, ct); }
             catch (OperationCanceledException) { cancelled.SetResult(); throw; }
@@ -276,10 +276,10 @@ public class SetupWizardWindowTests : IDisposable
         Assert.True(wizard.BackButton.IsEnabled);
         Assert.True(wizard.CancelButton.IsEnabled);
 
-        wizard.JiraSignIn.SignInButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        wizard.JiraSignInStep.JiraSignIn.SignInButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
         Dispatcher.UIThread.RunJobs();
 
-        Assert.Equal("Cancel sign-in", wizard.JiraSignIn.SignInButton.Content);
+        Assert.Equal("Cancel sign-in", wizard.JiraSignInStep.JiraSignIn.SignInButton.Content);
         Assert.False(wizard.BackButton.IsEnabled);
         Assert.False(wizard.NextButton.IsEnabled);
         Assert.False(wizard.CancelButton.IsEnabled);
@@ -288,7 +288,7 @@ public class SetupWizardWindowTests : IDisposable
         Assert.Equal(SetupStep.JiraSignIn, wizard.State.Step);
 
         // Cancelling the sign-in gives navigation back.
-        wizard.JiraSignIn.SignInButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        wizard.JiraSignInStep.JiraSignIn.SignInButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
         await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
         await RunUntilAsync(() => wizard.CancelButton.IsEnabled);
 
@@ -306,12 +306,12 @@ public class SetupWizardWindowTests : IDisposable
         var wizard = CreateWizard(draft, held: held);
         wizard.Show();
         await wizard.NextAsync();
-        Assert.Equal("Signed in as Ann", wizard.TogglSignedInText.Text);
+        Assert.Equal("Signed in as Ann", wizard.TogglSignInStep.TogglSignedInText.Text);
 
         held.Hold = _ => true;
-        wizard.TogglEmail.Text = "bob@x";
-        wizard.TogglPassword.Text = "pw";
-        var signingIn = wizard.SignInToTogglAsync();
+        wizard.TogglSignInStep.TogglEmail.Text = "bob@x";
+        wizard.TogglSignInStep.TogglPassword.Text = "pw";
+        var signingIn = wizard.TogglSignInStep.SignInToTogglAsync();
         await wizard.BackAsync();
         held.ReleaseAll();
         await signingIn;
@@ -354,7 +354,7 @@ public class SetupWizardWindowTests : IDisposable
         Assert.Equal(3, wizard.State.Draft.Toggl.ProjectId);
 
         held.Hold = r => r.RequestUri!.AbsolutePath == "/api/v9/me/workspaces";
-        wizard.OrganizationCombo.SelectedItem = ItemWithId(wizard.OrganizationCombo, 8);
+        wizard.TogglProjectStep.OrganizationCombo.SelectedItem = ItemWithId(wizard.TogglProjectStep.OrganizationCombo, 8);
 
         Assert.Equal(1, held.PendingCount);
         Assert.Equal(8, wizard.State.Draft.Toggl.OrganizationId);
@@ -379,7 +379,7 @@ public class SetupWizardWindowTests : IDisposable
         Assert.Equal(3, wizard.State.Draft.Toggl.ProjectId);
 
         held.Hold = r => r.RequestUri!.AbsolutePath == "/api/v9/workspaces/4/projects";
-        wizard.WorkspaceCombo.SelectedItem = ItemWithId(wizard.WorkspaceCombo, 4);
+        wizard.TogglProjectStep.WorkspaceCombo.SelectedItem = ItemWithId(wizard.TogglProjectStep.WorkspaceCombo, 4);
 
         Assert.Equal(1, held.PendingCount);
         Assert.Equal(4, wizard.State.Draft.Toggl.WorkspaceId);
@@ -404,10 +404,10 @@ public class SetupWizardWindowTests : IDisposable
         var wizard = CreateWizard(new AppConfig());
         wizard.Show();
         await wizard.NextAsync();
-        wizard.TogglEmail.Text = "ann@x";
-        wizard.TogglPassword.Text = "secret";
+        wizard.TogglSignInStep.TogglEmail.Text = "ann@x";
+        wizard.TogglSignInStep.TogglPassword.Text = "secret";
 
-        PressEnter(wizard.TogglPassword);
+        PressEnter(wizard.TogglSignInStep.TogglPassword);
         await RunUntilAsync(() => wizard.State.Draft.Toggl.ApiToken.Length > 0);
 
         Assert.Equal("tok", wizard.State.Draft.Toggl.ApiToken);
@@ -420,10 +420,10 @@ public class SetupWizardWindowTests : IDisposable
         wizard.OpenUrl = _ => { };
         wizard.Show();
         await wizard.NextAsync();
-        wizard.ShowTokenEntry();
-        wizard.TogglTokenBox.Text = "pasted";
+        wizard.TogglSignInStep.ShowTokenEntry();
+        wizard.TogglSignInStep.TogglTokenBox.Text = "pasted";
 
-        PressEnter(wizard.TogglTokenBox);
+        PressEnter(wizard.TogglSignInStep.TogglTokenBox);
         await RunUntilAsync(() => wizard.State.Draft.Toggl.ApiToken.Length > 0);
 
         Assert.Equal("tok", wizard.State.Draft.Toggl.ApiToken);
@@ -434,8 +434,8 @@ public class SetupWizardWindowTests : IDisposable
     {
         var wizard = CreateWizard(new AppConfig());
 
-        Assert.False(wizard.TogglPassword.IsUndoEnabled);
-        Assert.False(wizard.TogglTokenBox.IsUndoEnabled);
+        Assert.False(wizard.TogglSignInStep.TogglPassword.IsUndoEnabled);
+        Assert.False(wizard.TogglSignInStep.TogglTokenBox.IsUndoEnabled);
     }
 
     [AvaloniaFact]
@@ -446,13 +446,13 @@ public class SetupWizardWindowTests : IDisposable
 
         await AdvanceToAsync(wizard, SetupStep.JiraFields);
 
-        Assert.True(wizard.BudgetText.IsVisible);
-        Assert.False(wizard.BudgetCombo.IsVisible);
-        Assert.Equal("Old budget", wizard.BudgetText.Text);
-        Assert.False(string.IsNullOrEmpty(wizard.FieldsNoteText.Text));
+        Assert.True(wizard.JiraFieldsStep.BudgetText.IsVisible);
+        Assert.False(wizard.JiraFieldsStep.BudgetCombo.IsVisible);
+        Assert.Equal("Old budget", wizard.JiraFieldsStep.BudgetText.Text);
+        Assert.False(string.IsNullOrEmpty(wizard.JiraFieldsStep.FieldsNoteText.Text));
         Assert.True(wizard.NextButton.IsEnabled);
 
-        wizard.AccountText.Text = "Customer";
+        wizard.JiraFieldsStep.AccountText.Text = "Customer";
         Assert.Equal("Customer", wizard.State.Draft.Jira.AccountFieldName);
     }
 
@@ -465,7 +465,7 @@ public class SetupWizardWindowTests : IDisposable
         var wizard = CreateWizard(CompleteConfig());
         var finished = wizard.ShowDialog<AppConfig?>(owner);
         await AdvanceToAsync(wizard, SetupStep.ReportOutput);
-        wizard.ReportFormat.SelectedIndex = 1;
+        wizard.ReportOutputStep.ReportFormat.SelectedIndex = 1;
         await wizard.NextAsync();
         Assert.True(wizard.FinishButton.IsVisible);
         wizard.FinishButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));

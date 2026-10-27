@@ -1,0 +1,36 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="ToggJirazer.Setup.Steps.TogglSignInStep">
+
+    <StackPanel>
+        <StackPanel x:Name="TogglSignedInPanel" Spacing="4" IsVisible="False">
+            <TextBlock x:Name="TogglSignedInText" FontWeight="SemiBold"/>
+            <HyperlinkButton x:Name="UseDifferentAccountLink" Content="Use a different account"
+                             Click="UseDifferentAccount_Click"/>
+        </StackPanel>
+
+        <StackPanel x:Name="TogglFormPanel">
+            <Grid ColumnDefinitions="120,*" RowDefinitions="Auto,Auto,Auto">
+                <Label Grid.Row="0" Grid.Column="0" Content="Email:"/>
+                <TextBox Grid.Row="0" Grid.Column="1" x:Name="TogglEmail"/>
+
+                <Label Grid.Row="1" Grid.Column="0" Content="Password:"/>
+                <TextBox Grid.Row="1" Grid.Column="1" x:Name="TogglPassword" PasswordChar="●" IsUndoEnabled="False"/>
+
+                <Button Grid.Row="2" Grid.Column="1" x:Name="TogglSignInButton" Content="Sign in"
+                        Margin="0,6,0,0" Click="TogglSignIn_Click"/>
+            </Grid>
+            <HyperlinkButton x:Name="UseTokenLink" Content="Use an API token instead"
+                             Margin="120,8,0,0" Click="UseToken_Click"/>
+        </StackPanel>
+
+        <Grid x:Name="TogglTokenPanel" ColumnDefinitions="120,*,Auto" IsVisible="False" Margin="0,6,0,0">
+            <Label Grid.Column="0" Content="API token:"/>
+            <TextBox Grid.Column="1" x:Name="TogglTokenBox" PasswordChar="●" IsUndoEnabled="False" Margin="0,3,4,3"
+                     Watermark="Paste the token from your Toggl profile"/>
+            <Button Grid.Column="2" x:Name="CheckTokenButton" Content="Check token" Click="CheckToken_Click"/>
+        </Grid>
+
+        <TextBlock x:Name="TogglStatusText" Classes="note"/>
+    </StackPanel>
+</UserControl>
