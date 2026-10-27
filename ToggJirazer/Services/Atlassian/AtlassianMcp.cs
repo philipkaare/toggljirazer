@@ -61,13 +61,24 @@ public sealed class AtlassianMcp : IAsyncDisposable
     public async Task<bool> IsSignedInAsync(CancellationToken ct)
     {
         if (!_store.HasTokens) return false;
+        return await ProbeSignInAsync(() => GetSitesAsync(ct), ResetConnectionAsync);
+    }
+
+    /// <summary>
+    /// Runs the sites call and reports whether it worked. A failed token refresh (e.g. <c>invalid_grant</c>)
+    /// may surface as <see cref="AtlassianToolException"/> rather than <see cref="AtlassianAuthException"/>,
+    /// so both count as "not signed in" and drop the cached connection. Network errors propagate.
+    /// </summary>
+    internal static async Task<bool> ProbeSignInAsync(Func<Task> getSites, Func<Task> resetConnection)
+    {
         try
         {
-            await GetSitesAsync(ct);
+            await getSites();
             return true;
         }
-        catch (AtlassianAuthException)
+        catch (Exception ex) when (ex is AtlassianAuthException or AtlassianToolException)
         {
+            await resetConnection();
             return false;
         }
     }

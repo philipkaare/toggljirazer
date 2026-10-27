@@ -17,7 +17,7 @@ public class MainWindowTests
         var input = new AppConfig
         {
             Toggl = new TogglConfig { ApiToken = "tt", OrganizationId = 1, WorkspaceId = 2, ProjectId = 3 },
-            Jira = new JiraConfig { BaseUrl = "https://x.atlassian.net", UserEmail = "a@b.c", ApiToken = "jt" },
+            Jira = new JiraConfig { CloudId = "cid-1", SiteUrl = "https://x.atlassian.net" },
             Report = new ReportConfig { StartDate = "2026-01-01", EndDate = "2026-06-30", OutputFile = "r.xlsx", Format = "csv" },
             Email = new EmailConfig
             {
@@ -33,9 +33,8 @@ public class MainWindowTests
         Assert.Equal(1, output.Toggl.OrganizationId);
         Assert.Equal(2, output.Toggl.WorkspaceId);
         Assert.Equal(3, output.Toggl.ProjectId);
-        Assert.Equal("https://x.atlassian.net", output.Jira.BaseUrl);
-        Assert.Equal("a@b.c", output.Jira.UserEmail);
-        Assert.Equal("jt", output.Jira.ApiToken);
+        Assert.Equal("cid-1", output.Jira.CloudId);
+        Assert.Equal("https://x.atlassian.net", output.Jira.SiteUrl);
         Assert.Equal("2026-01-01", output.Report.StartDate);
         Assert.Equal("2026-06-30", output.Report.EndDate);
         Assert.Equal("r.xlsx", output.Report.OutputFile);

@@ -15,7 +15,7 @@ public partial class MainWindow : Window
     private readonly SettingsService _settingsService;
     private bool _isRunning;
     private string? _lastOutputPath;
-    // Fields without UI controls (Jira custom field names) are carried through from here on Save.
+    // Fields without UI controls (Jira site and custom field names) are carried through from here on Save.
     private AppConfig _loadedConfig = new();
 
     // Required by Avalonia's runtime XAML loader and designer.
@@ -39,10 +39,6 @@ public partial class MainWindow : Window
         TogglOrgId.Text = config.Toggl.OrganizationId == 0 ? string.Empty : config.Toggl.OrganizationId.ToString();
         TogglWorkspaceId.Text = config.Toggl.WorkspaceId == 0 ? string.Empty : config.Toggl.WorkspaceId.ToString();
         TogglProjectId.Text = config.Toggl.ProjectId == 0 ? string.Empty : config.Toggl.ProjectId.ToString();
-
-        JiraBaseUrl.Text = config.Jira.BaseUrl;
-        JiraUserEmail.Text = config.Jira.UserEmail;
-        JiraApiToken.Text = config.Jira.ApiToken;
 
         ReportStartDate.SelectedDate = ParseConfigDate(config.Report.StartDate) ?? new DateTime(DateTime.Today.Year, 1, 1);
         ReportEndDate.SelectedDate = ParseConfigDate(config.Report.EndDate) ?? DateTime.Today;
@@ -97,9 +93,8 @@ public partial class MainWindow : Window
             },
             Jira = new JiraConfig
             {
-                BaseUrl = Trimmed(JiraBaseUrl),
-                UserEmail = Trimmed(JiraUserEmail),
-                ApiToken = JiraApiToken.Text ?? string.Empty,
+                CloudId = _loadedConfig.Jira.CloudId,
+                SiteUrl = _loadedConfig.Jira.SiteUrl,
                 BudgetFieldName = _loadedConfig.Jira.BudgetFieldName,
                 AccountFieldName = _loadedConfig.Jira.AccountFieldName
             },
@@ -202,6 +197,7 @@ public partial class MainWindow : Window
 
         // Read the cache toggle on the UI thread before work moves to a background thread.
         var cacheEnabled = EnableCacheCheckBox.IsChecked == true;
+        var jiraTools = App.Mcp.Tools;
 
         _isRunning = true;
         RunButton.IsEnabled = false;
@@ -223,7 +219,7 @@ public partial class MainWindow : Window
         {
             var (startDate, endDate) = ReportRunner.ResolveConfiguredPeriod(config.Report);
             var reportWritten = await Task.Run(async () => await ReportRunner.RunAsync(
-                config, startDate, endDate, cacheEnabled, ShowCacheWritePermissionDialog));
+                config, jiraTools, startDate, endDate, cacheEnabled, ShowCacheWritePermissionDialog));
 
             if (reportWritten)
             {
