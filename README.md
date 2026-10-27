@@ -3,7 +3,7 @@ A console application to generate reports based on Jira and Toggl Track.
 
 ## Overview
 
-ToggJirazer fetches detailed time entries from the [Toggl Track API](https://developers.track.toggl.com/docs/) for a specific project and time period, cross-references them with [Jira](https://developer.atlassian.com/cloud/jira/platform/rest/v3/) issues (matched by issue key found in the time entry description), and produces a report in CSV or XLSX format. ToggJirazer opens the Windows GUI by default on Windows and runs a console report on macOS/Linux. Use `--tui` for the interactive terminal UI or `--headless` for an explicit non-interactive run.
+ToggJirazer fetches detailed time entries from the [Toggl Track API](https://developers.track.toggl.com/docs/) for a specific project and time period, cross-references them with [Jira](https://developer.atlassian.com/cloud/jira/platform/rest/v3/) issues (matched by issue key found in the time entry description), and produces a report in CSV or XLSX format. ToggJirazer opens a windowed app (Avalonia) by default on Windows and macOS. Use `--headless` for a scripted, non-interactive run.
 
 ## Report Columns
 
@@ -27,7 +27,18 @@ ToggJirazer fetches detailed time entries from the [Toggl Track API](https://dev
 
 ## Configuration
 
-Edit `ToggJirazer/appsettings.json` before running:
+Settings are stored per user, outside the repository:
+
+- **Windows:** `%APPDATA%\ToggJirazer\appsettings.json`
+- **macOS:** `~/Library/Application Support/ToggJirazer/appsettings.json`
+
+The file is created on first launch, either from your existing settings (an older
+`appsettings.json` from a previous version) or from the template in
+`ToggJirazer/appsettings.json`. Edit the values in the app and click **Save Settings**,
+or edit the file directly. The `appsettings.json` in the repository is only a template;
+the app never writes to it, so your tokens stay out of git.
+
+The settings file looks like this:
 
 ```json
 {
@@ -66,50 +77,38 @@ Time entry descriptions in Toggl must begin with a Jira issue key (e.g. `PROJ-12
 
 ## Building & Running
 
+On macOS/Linux use the helper script:
+
 ```bash
-# Interactive TUI
-dotnet run --project ToggJirazer -- --tui
-
-# Or use the helper script
-./run.sh --tui
-
-# Show available options
+./run.sh              # open the app
+./run.sh --headless   # non-interactive run: reads your settings, writes the report, exits
 ./run.sh --help
-
-# Non-interactive run (reads appsettings.json, writes the report, exits)
-./run.sh --headless
 ```
 
-On Windows use the PowerShell helper script instead:
+On Windows use the PowerShell helper script:
 
 ```powershell
-.\run.ps1            # Windows GUI
-.\run.ps1 --tui      # interactive terminal UI
-.\run.ps1 --help
+.\run.ps1             # open the app
 .\run.ps1 --headless
+.\run.ps1 --help
 ```
 
 The helper scripts work from any working directory when invoked by their path.
-It uses `ToggJirazer/appsettings.json` and writes relative report paths inside
+They run from `ToggJirazer/`, so relative report paths are written inside
 `ToggJirazer/`. Any arguments are forwarded to the application.
 
-The app is a cross-platform .NET 10 console application (Terminal.Gui). It runs
-on macOS, Linux, and Windows. In the TUI you can edit the Toggl/Jira/Report
-settings, save them, generate the report, and open it in your default
-spreadsheet app. Use `--tui` in a terminal to open the TUI. Redirected input/output selects headless mode.
-Use `--headless` for automation; the
-process exits non-zero on validation or run errors.
+The app is a cross-platform .NET 10 Avalonia application. In the window you can
+edit the Toggl/Jira/Report/Email settings, save them, generate the report, and open
+it in your default spreadsheet app. Redirected input/output selects headless mode.
+Use `--headless` for automation; the process exits non-zero on validation or run errors.
 
-## Automatic monthly email
+## Email
 
-The Windows GUI’s Email tab configures SMTP settings and recipients for sending the report by email.
+The Email tab configures SMTP settings and recipients for sending the report by email.
 
 - **Send Report by Email Now** generates the report with the configured period and emails
   it immediately (requires xlsx format).
-- **Send automatically every month** registers a daily Windows scheduled task
-  ("ToggJirazer AutoReport", 09:00, runs when the PC is next on if missed) that starts
-  the app with `--auto`. On each run the app checks `automation-state.json` next to the
-  exe: if the report covering last month (period: Jan 1 → end of previous month) has not
-  been sent yet, it is generated and emailed, and the state is updated. Failures are
-  logged to `logs\auto.log` and retried on the next daily run.
+- `{month}` and `{year}` in the subject and body are replaced with the report month
+  (Danish month name) and year.
 
+Automatic monthly sending was removed. If you enabled it earlier, delete the 'ToggJirazer AutoReport' task in Task Scheduler.

@@ -1,7 +1,10 @@
+using System.Globalization;
 using System.IO;
-using System.Windows;
-using System.Windows.Controls;
-using Microsoft.Win32;
+using Avalonia.Controls;
+using Avalonia.Interactivity;
+using Avalonia.Layout;
+using Avalonia.Platform.Storage;
+using Avalonia.Threading;
 using ToggJirazer.Models;
 using ToggJirazer.Services;
 
@@ -12,51 +15,37 @@ public partial class MainWindow : Window
     private readonly SettingsService _settingsService;
     private bool _isRunning;
     private string? _lastOutputPath;
-    private bool _suppressAutoSendEvents;
+    // Fields without UI controls (Jira custom field names) are carried through from here on Save.
+    private AppConfig _loadedConfig = new();
 
-    private static readonly string SettingsPath =
-        Path.Combine(AppContext.BaseDirectory, "appsettings.json");
+    // Required by Avalonia's runtime XAML loader and designer.
+    public MainWindow() : this(SettingsLocator.UserSettingsPath()) { }
 
-    public MainWindow()
+    public MainWindow(string settingsPath)
     {
         InitializeComponent();
-        _settingsService = new SettingsService(SettingsPath);
+        _settingsService = new SettingsService(settingsPath);
         PopulateUiFromConfig(_settingsService.Load());
-        Loaded += MainWindow_Loaded;
-    }
-
-    private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var enabled = await Task.Run(ScheduledTaskService.IsEnabled);
-            _suppressAutoSendEvents = true;
-            AutoSendCheckBox.IsChecked = enabled;
-            _suppressAutoSendEvents = false;
-        }
-        catch
-        {
-            // Leave unchecked if the query fails; toggling will surface any real error.
-        }
     }
 
     // -------------------------------------------------------------------------
     // Settings helpers
     // -------------------------------------------------------------------------
 
-    private void PopulateUiFromConfig(AppConfig config)
+    internal void PopulateUiFromConfig(AppConfig config)
     {
-        TogglApiToken.Password = config.Toggl.ApiToken;
+        _loadedConfig = config;
+        TogglApiToken.Text = config.Toggl.ApiToken;
         TogglOrgId.Text = config.Toggl.OrganizationId == 0 ? string.Empty : config.Toggl.OrganizationId.ToString();
         TogglWorkspaceId.Text = config.Toggl.WorkspaceId == 0 ? string.Empty : config.Toggl.WorkspaceId.ToString();
         TogglProjectId.Text = config.Toggl.ProjectId == 0 ? string.Empty : config.Toggl.ProjectId.ToString();
 
         JiraBaseUrl.Text = config.Jira.BaseUrl;
         JiraUserEmail.Text = config.Jira.UserEmail;
-        JiraApiToken.Password = config.Jira.ApiToken;
+        JiraApiToken.Text = config.Jira.ApiToken;
 
-        ReportStartDate.Text = config.Report.StartDate ?? new DateTime(DateTime.Today.Year, 1, 1).ToString("yyyy-MM-dd");
-        ReportEndDate.Text = config.Report.EndDate ?? DateTime.Today.ToString("yyyy-MM-dd");
+        ReportStartDate.SelectedDate = ParseConfigDate(config.Report.StartDate) ?? new DateTime(DateTime.Today.Year, 1, 1);
+        ReportEndDate.SelectedDate = ParseConfigDate(config.Report.EndDate) ?? DateTime.Today;
         ReportOutputFile.Text = config.Report.OutputFile;
 
         foreach (var item in ReportFormat.Items.Cast<ComboBoxItem>())
@@ -74,14 +63,24 @@ public partial class MainWindow : Window
         EmailSmtpPort.Text = config.Email.SmtpPort.ToString();
         EmailUseSsl.IsChecked = config.Email.UseSsl;
         EmailUsername.Text = config.Email.Username;
-        EmailPassword.Password = config.Email.Password;
+        EmailPassword.Text = config.Email.Password;
         EmailFromAddress.Text = config.Email.FromAddress;
         EmailRecipients.Text = config.Email.Recipients;
         EmailSubject.Text = config.Email.Subject;
         EmailBody.Text = config.Email.Body;
     }
 
-    private AppConfig ReadConfigFromUi()
+    private static DateTime? ParseConfigDate(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+        if (DateTime.TryParseExact(value.Trim(), "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                DateTimeStyles.None, out var exact))
+            return exact;
+        return DateTime.TryParse(value, out var loose) ? loose : null;
+    }
+
+    internal AppConfig ReadConfigFromUi()
     {
         long.TryParse(TogglOrgId.Text, out var orgId);
         long.TryParse(TogglWorkspaceId.Text, out var wsId);
@@ -91,44 +90,48 @@ public partial class MainWindow : Window
         {
             Toggl = new TogglConfig
             {
-                ApiToken = TogglApiToken.Password,
+                ApiToken = TogglApiToken.Text ?? string.Empty,
                 OrganizationId = orgId,
                 WorkspaceId = wsId,
                 ProjectId = projId
             },
             Jira = new JiraConfig
             {
-                BaseUrl = JiraBaseUrl.Text.Trim(),
-                UserEmail = JiraUserEmail.Text.Trim(),
-                ApiToken = JiraApiToken.Password
+                BaseUrl = Trimmed(JiraBaseUrl),
+                UserEmail = Trimmed(JiraUserEmail),
+                ApiToken = JiraApiToken.Text ?? string.Empty,
+                BudgetFieldName = _loadedConfig.Jira.BudgetFieldName,
+                AccountFieldName = _loadedConfig.Jira.AccountFieldName
             },
             Report = new ReportConfig
             {
-                StartDate = string.IsNullOrWhiteSpace(ReportStartDate.Text) ? null : ReportStartDate.Text.Trim(),
-                EndDate = string.IsNullOrWhiteSpace(ReportEndDate.Text) ? null : ReportEndDate.Text.Trim(),
-                OutputFile = ReportOutputFile.Text.Trim(),
+                StartDate = ReportStartDate.SelectedDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                EndDate = ReportEndDate.SelectedDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                OutputFile = Trimmed(ReportOutputFile),
                 Format = (ReportFormat.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "xlsx"
             },
             Email = new EmailConfig
             {
-                SmtpHost = EmailSmtpHost.Text.Trim(),
+                SmtpHost = Trimmed(EmailSmtpHost),
                 SmtpPort = int.TryParse(EmailSmtpPort.Text, out var smtpPort) ? smtpPort : 587,
                 UseSsl = EmailUseSsl.IsChecked == true,
-                Username = EmailUsername.Text.Trim(),
-                Password = EmailPassword.Password,
-                FromAddress = EmailFromAddress.Text.Trim(),
-                Recipients = EmailRecipients.Text.Trim(),
-                Subject = EmailSubject.Text,
-                Body = EmailBody.Text
+                Username = Trimmed(EmailUsername),
+                Password = EmailPassword.Text ?? string.Empty,
+                FromAddress = Trimmed(EmailFromAddress),
+                Recipients = Trimmed(EmailRecipients),
+                Subject = EmailSubject.Text ?? string.Empty,
+                Body = EmailBody.Text ?? string.Empty
             }
         };
     }
+
+    private static string Trimmed(TextBox box) => (box.Text ?? string.Empty).Trim();
 
     // -------------------------------------------------------------------------
     // Button handlers
     // -------------------------------------------------------------------------
 
-    private void SaveSettings_Click(object sender, RoutedEventArgs e)
+    private void SaveSettings_Click(object? sender, RoutedEventArgs e)
     {
         try
         {
@@ -141,37 +144,39 @@ public partial class MainWindow : Window
         }
     }
 
-    private void BrowseOutputFile_Click(object sender, RoutedEventArgs e)
+    private async void BrowseOutputFile_Click(object? sender, RoutedEventArgs e)
     {
         var format = (ReportFormat.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "xlsx";
         var isXlsx = format.Equals("xlsx", StringComparison.OrdinalIgnoreCase);
 
         string? initialDir = null;
-        try { initialDir = Path.GetDirectoryName(Path.GetFullPath(ReportOutputFile.Text)); }
+        try { initialDir = Path.GetDirectoryName(Path.GetFullPath(Trimmed(ReportOutputFile))); }
         catch { /* ignore invalid path */ }
 
-        var dlg = new SaveFileDialog
+        var fileType = isXlsx
+            ? new FilePickerFileType("Excel files") { Patterns = ["*.xlsx"] }
+            : new FilePickerFileType("CSV files") { Patterns = ["*.csv"] };
+        var file = await StorageProvider.SaveFilePickerAsync(new FilePickerSaveOptions
         {
             Title = "Select output file",
-            Filter = isXlsx
-                ? "Excel files (*.xlsx)|*.xlsx|All files (*.*)|*.*"
-                : "CSV files (*.csv)|*.csv|All files (*.*)|*.*",
-            FileName = Path.GetFileName(ReportOutputFile.Text),
-            InitialDirectory = initialDir ?? string.Empty
-        };
+            FileTypeChoices = [fileType, FilePickerFileTypes.All],
+            SuggestedFileName = Path.GetFileName(Trimmed(ReportOutputFile)),
+            SuggestedStartLocation = initialDir == null ? null : await StorageProvider.TryGetFolderFromPathAsync(initialDir)
+        });
 
-        if (dlg.ShowDialog(this) == true)
+        var path = file?.TryGetLocalPath();
+        if (path != null)
         {
-            ReportOutputFile.Text = dlg.FileName;
+            ReportOutputFile.Text = path;
             // Persist immediately so the path is not lost
             try { _settingsService.Save(ReadConfigFromUi()); } catch { /* ignore */ }
         }
     }
 
-    private async void RunButton_Click(object sender, RoutedEventArgs e)
+    private async void RunButton_Click(object? sender, RoutedEventArgs e)
         => await RunReportFlowAsync(sendEmail: false);
 
-    private async void SendEmailNow_Click(object sender, RoutedEventArgs e)
+    private async void SendEmailNow_Click(object? sender, RoutedEventArgs e)
         => await RunReportFlowAsync(sendEmail: true);
 
     private async Task RunReportFlowAsync(bool sendEmail)
@@ -202,7 +207,7 @@ public partial class MainWindow : Window
         RunButton.IsEnabled = false;
         SaveButton.IsEnabled = false;
         SendEmailNowButton.IsEnabled = false;
-        LogTextBox.Clear();
+        LogTextBox.Text = string.Empty;
         ProgressBar.IsIndeterminate = true;
         ProgressBar.Value = 0;
 
@@ -234,8 +239,8 @@ public partial class MainWindow : Window
                 }
                 else
                 {
-                    var subject = AutomationLogic.ResolvePlaceholders(config.Email.Subject, endDate);
-                    var body = AutomationLogic.ResolvePlaceholders(config.Email.Body, endDate);
+                    var subject = EmailTemplate.ResolvePlaceholders(config.Email.Subject, endDate);
+                    var body = EmailTemplate.ResolvePlaceholders(config.Email.Body, endDate);
                     AppendLog($"Sending email to {string.Join(", ", EmailService.ParseRecipients(config.Email.Recipients))}...");
                     await Task.Run(async () => await EmailService.SendReportAsync(
                         config.Email, subject, body, config.Report.OutputFile));
@@ -267,48 +272,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private async void AutoSend_Checked(object sender, RoutedEventArgs e)
-    {
-        if (_suppressAutoSendEvents) return;
-        try
-        {
-            await Task.Run(ScheduledTaskService.Enable);
-
-            // Seed the state so automation starts with next month's report — otherwise
-            // ShouldSend(null, today) is true and the very next 09:00 run would immediately
-            // email the previous month's report, likely duplicating a manually-sent one.
-            new AutomationStateStore(AppContext.BaseDirectory)
-                .Save(new AutomationState { LastSentPeriod = AutomationLogic.GetTargetPeriod(DateTime.Today) });
-
-            AppendLog($"Daily automatic send enabled (task '{ScheduledTaskService.TaskName}', 09:00; a missed run fires when the PC is next on). The first automatic email covers {DateTime.Today:MMMM} and is sent at the start of next month — use 'Send Report by Email Now' if you want last month's report sent now.");
-        }
-        catch (Exception ex)
-        {
-            AppendLog($"[ERROR] {ex.Message}");
-            _suppressAutoSendEvents = true;
-            AutoSendCheckBox.IsChecked = false;
-            _suppressAutoSendEvents = false;
-        }
-    }
-
-    private async void AutoSend_Unchecked(object sender, RoutedEventArgs e)
-    {
-        if (_suppressAutoSendEvents) return;
-        try
-        {
-            await Task.Run(ScheduledTaskService.Disable);
-            AppendLog("Daily automatic send disabled.");
-        }
-        catch (Exception ex)
-        {
-            AppendLog($"[ERROR] {ex.Message}");
-            _suppressAutoSendEvents = true;
-            AutoSendCheckBox.IsChecked = true;
-            _suppressAutoSendEvents = false;
-        }
-    }
-
-    private void OpenReport_Click(object sender, RoutedEventArgs e)
+    private void OpenReport_Click(object? sender, RoutedEventArgs e)
     {
         if (string.IsNullOrWhiteSpace(_lastOutputPath) || !File.Exists(_lastOutputPath))
         {
@@ -318,11 +282,7 @@ public partial class MainWindow : Window
 
         try
         {
-            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = _lastOutputPath,
-                UseShellExecute = true
-            });
+            Cli.PlatformOpener.Open(_lastOutputPath);
         }
         catch (Exception ex)
         {
@@ -340,51 +300,48 @@ public partial class MainWindow : Window
     /// May be called from a background thread.
     /// </summary>
     private bool ShowCacheWritePermissionDialog(Exception ex)
+        => Dispatcher.UIThread.InvokeAsync(() => ShowCacheWritePermissionDialogAsync(ex)).GetAwaiter().GetResult();
+
+    private async Task<bool> ShowCacheWritePermissionDialogAsync(Exception ex)
     {
-        return Dispatcher.Invoke(() =>
+        var message = new TextBlock
         {
-            var message = new TextBlock
-            {
-                Text = "The request cache could not be saved because of a permission problem:\n\n" +
-                       ex.Message +
-                       "\n\nDo you want to try again?",
-                TextWrapping = TextWrapping.Wrap,
-                Margin = new Thickness(0, 0, 0, 16)
-            };
+            Text = "The request cache could not be saved because of a permission problem:\n\n" +
+                   ex.Message +
+                   "\n\nDo you want to try again?",
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+            Margin = new Avalonia.Thickness(0, 0, 0, 16)
+        };
 
-            var tryAgainButton = new Button { Content = "Try Again", Width = 90, Height = 28, Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
-            var cancelButton = new Button { Content = "Cancel", Width = 90, Height = 28, IsCancel = true };
+        var tryAgainButton = new Button { Content = "Try Again", Width = 90, Margin = new Avalonia.Thickness(0, 0, 8, 0), IsDefault = true };
+        var cancelButton = new Button { Content = "Cancel", Width = 90, IsCancel = true };
 
-            var buttons = new StackPanel
-            {
-                Orientation = Orientation.Horizontal,
-                HorizontalAlignment = HorizontalAlignment.Right
-            };
-            buttons.Children.Add(tryAgainButton);
-            buttons.Children.Add(cancelButton);
+        var buttons = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right
+        };
+        buttons.Children.Add(tryAgainButton);
+        buttons.Children.Add(cancelButton);
 
-            var panel = new StackPanel { Margin = new Thickness(16) };
-            panel.Children.Add(message);
-            panel.Children.Add(buttons);
+        var panel = new StackPanel { Margin = new Avalonia.Thickness(16) };
+        panel.Children.Add(message);
+        panel.Children.Add(buttons);
 
-            var dialog = new Window
-            {
-                Title = "Could not save cache",
-                Content = panel,
-                Width = 420,
-                SizeToContent = SizeToContent.Height,
-                ResizeMode = ResizeMode.NoResize,
-                WindowStartupLocation = WindowStartupLocation.CenterOwner,
-                Owner = this
-            };
+        var dialog = new Window
+        {
+            Title = "Could not save cache",
+            Content = panel,
+            Width = 420,
+            SizeToContent = SizeToContent.Height,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner
+        };
 
-            var retry = false;
-            tryAgainButton.Click += (_, _) => { retry = true; dialog.DialogResult = true; };
-            cancelButton.Click += (_, _) => { retry = false; dialog.DialogResult = false; };
+        tryAgainButton.Click += (_, _) => dialog.Close(true);
+        cancelButton.Click += (_, _) => dialog.Close(false);
 
-            dialog.ShowDialog();
-            return retry;
-        });
+        return await dialog.ShowDialog<bool>(this);
     }
 
     // -------------------------------------------------------------------------
@@ -394,10 +351,10 @@ public partial class MainWindow : Window
     /// <summary>Appends a line to the log TextBox from any thread.</summary>
     private void AppendLog(string line)
     {
-        Dispatcher.BeginInvoke(() =>
+        Dispatcher.UIThread.Post(() =>
         {
-            LogTextBox.AppendText(line + Environment.NewLine);
-            LogTextBox.ScrollToEnd();
+            LogTextBox.Text += line + Environment.NewLine;
+            LogTextBox.CaretIndex = LogTextBox.Text.Length;
         });
     }
 }

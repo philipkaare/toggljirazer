@@ -98,4 +98,52 @@ public class EmailSettingsServiceTests : IDisposable
         Assert.Equal("Timerapport {month} {year}", loaded.Email.Subject);
         Assert.Contains("{month}", loaded.Email.Body);
     }
+
+    [Fact]
+    public void Save_does_not_persist_development_overrides()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"tj-dev-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var path = Path.Combine(dir, "appsettings.json");
+            File.WriteAllText(path, """{"Toggl":{"ApiToken":"base"}}""");
+            File.WriteAllText(Path.Combine(dir, "appsettings.development.json"), """{"Toggl":{"ApiToken":"dev"}}""");
+            var service = new SettingsService(path);
+
+            service.Save(service.Load());
+
+            File.Delete(Path.Combine(dir, "appsettings.development.json"));
+            Assert.Equal("base", service.Load().Toggl.ApiToken);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Save_persists_user_change_to_dev_overridden_value()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"tj-dev-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var path = Path.Combine(dir, "appsettings.json");
+            File.WriteAllText(path, """{"Toggl":{"ApiToken":"base"}}""");
+            File.WriteAllText(Path.Combine(dir, "appsettings.development.json"), """{"Toggl":{"ApiToken":"dev"}}""");
+            var service = new SettingsService(path);
+            var config = service.Load();
+            config.Toggl.ApiToken = "edited";
+
+            service.Save(config);
+
+            File.Delete(Path.Combine(dir, "appsettings.development.json"));
+            Assert.Equal("edited", service.Load().Toggl.ApiToken);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
 }
