@@ -1,0 +1,21 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="ToggJirazer.Setup.Steps.JiraFieldsStep">
+
+    <StackPanel>
+        <Grid ColumnDefinitions="120,*" RowDefinitions="Auto,Auto">
+            <Label Grid.Row="0" Grid.Column="0" Content="Budget field:"/>
+            <Panel Grid.Row="0" Grid.Column="1">
+                <ComboBox x:Name="BudgetCombo" SelectionChanged="FieldCombo_SelectionChanged"/>
+                <TextBox x:Name="BudgetText" IsVisible="False"/>
+            </Panel>
+
+            <Label Grid.Row="1" Grid.Column="0" Content="Account field:"/>
+            <Panel Grid.Row="1" Grid.Column="1">
+                <ComboBox x:Name="AccountCombo" SelectionChanged="FieldCombo_SelectionChanged"/>
+                <TextBox x:Name="AccountText" IsVisible="False"/>
+            </Panel>
+        </Grid>
+        <TextBlock x:Name="FieldsNoteText" Classes="note"/>
+    </StackPanel>
+</UserControl>

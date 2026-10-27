@@ -2,7 +2,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              x:Class="ToggJirazer.AtlassianSignInControl">
 
-    <Grid ColumnDefinitions="160,*" RowDefinitions="Auto,Auto">
+    <Grid ColumnDefinitions="160,*" RowDefinitions="Auto,Auto,Auto">
         <Label Grid.Row="0" Grid.Column="0" Content="Atlassian:"/>
         <StackPanel Grid.Row="0" Grid.Column="1" Orientation="Horizontal" Spacing="10" Margin="0,3">
             <Button x:Name="SignInButton" Content="Sign in with Atlassian" Click="SignInButton_Click"/>
@@ -10,8 +10,15 @@
                        TextWrapping="Wrap"/>
         </StackPanel>
 
-        <Label Grid.Row="1" Grid.Column="0" Content="Site:"/>
-        <ComboBox Grid.Row="1" Grid.Column="1" x:Name="SiteComboBox"
+        <!-- Shown while signing in, so the address can be copied if the browser didn't open. -->
+        <StackPanel Grid.Row="1" Grid.Column="1" x:Name="AuthorizationUrlPanel" Margin="0,0,0,6"
+                    IsVisible="False">
+            <TextBlock Text="If your browser didn't open, copy this address into it:" FontSize="12"/>
+            <SelectableTextBlock x:Name="AuthorizationUrlText" TextWrapping="Wrap" FontSize="12"/>
+        </StackPanel>
+
+        <Label Grid.Row="2" Grid.Column="0" Content="Site:"/>
+        <ComboBox Grid.Row="2" Grid.Column="1" x:Name="SiteComboBox"
                   PlaceholderText="Sign in to load your Atlassian sites"
                   SelectionChanged="SiteComboBox_SelectionChanged"/>
     </Grid>

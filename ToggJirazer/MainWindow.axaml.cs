@@ -20,6 +20,7 @@ public partial class MainWindow : Window
     private readonly AtlassianMcp? _mcp;
     private bool _isRunning;
     private bool _isSetupOpen;
+    private CancellationTokenSource? _preRunSignInCts; // set while the pre-run sign-in waits for the browser
     private string? _lastOutputPath;
     // Fields without UI controls (Jira custom field names) are carried through from here on Save.
     private AppConfig _loadedConfig = new();
@@ -34,11 +35,13 @@ public partial class MainWindow : Window
         _mcp = mcp;
         ConfirmSignInAgain = ShowSignInAgainDialogAsync;
         RunReport = RunReportPipelineAsync;
-        SignInAgain = () => _mcp!.SignInAsync(CancellationToken.None);
+        SignInAgain = ct => _mcp!.SignInAsync(ct, uri => Dispatcher.UIThread.Post(() =>
+            AppendLog($"If your browser didn't open, copy this address into it: {uri.AbsoluteUri}")));
         ShowWizard = ShowSetupWizardAsync;
         HasAtlassianToken = () => _mcp?.HasStoredSignIn == true;
         PopulateUiFromConfig(_settingsService.Load());
         Opened += MainWindow_Opened;
+        JiraSignIn.SigningInChanged += (_, _) => UpdateButtonsForJiraSignIn();
 
         if (mcp != null)
         {
@@ -51,8 +54,8 @@ public partial class MainWindow : Window
     /// <summary>Asks whether to sign in again before a run. Replaceable by tests.</summary>
     internal Func<Task<bool>> ConfirmSignInAgain { get; set; }
 
-    /// <summary>The interactive Atlassian sign-in offered before a run. Replaceable by tests.</summary>
-    internal Func<Task> SignInAgain { get; set; }
+    /// <summary>The interactive Atlassian sign-in offered before a run; cancelled by "Cancel sign-in". Replaceable by tests.</summary>
+    internal Func<CancellationToken, Task> SignInAgain { get; set; }
 
     /// <summary>Runs the report pipeline; true when a file was written. Replaceable by tests.</summary>
     internal Func<AppConfig, Task<bool>> RunReport { get; set; }
@@ -80,7 +83,7 @@ public partial class MainWindow : Window
     /// </summary>
     internal async Task OpenSetupAsync()
     {
-        if (_isSetupOpen || _isRunning) return;
+        if (_isSetupOpen || _isRunning || JiraSignIn.IsSigningIn) return;
         _isSetupOpen = true;
         try
         {
@@ -263,9 +266,23 @@ public partial class MainWindow : Window
     private async void SendEmailNow_Click(object? sender, RoutedEventArgs e)
         => await RunReportFlowAsync(sendEmail: true);
 
+    /// <summary>
+    /// While the Jira tab's sign-in waits for the browser, Setup… and the report buttons are disabled: the
+    /// wizard and a run would use (or replace) the Atlassian connection mid sign-in. The control itself stays
+    /// enabled so its "Cancel sign-in" works.
+    /// </summary>
+    private void UpdateButtonsForJiraSignIn()
+    {
+        if (_isRunning) return; // a run restores the buttons itself when it ends
+        var enabled = !JiraSignIn.IsSigningIn;
+        SetupButton.IsEnabled = enabled;
+        RunButton.IsEnabled = enabled;
+        SendEmailNowButton.IsEnabled = enabled;
+    }
+
     internal async Task RunReportFlowAsync(bool sendEmail)
     {
-        if (_isRunning) return;
+        if (_isRunning || JiraSignIn.IsSigningIn) return;
 
         var config = ReadConfigFromUi();
         var error = ReportRunner.ValidateConfig(config);
@@ -375,12 +392,31 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Checks the Atlassian sign-in before a run and, when it is missing or expired, asks to sign in
-    /// again. Returns false, after logging an error, when the run should stop.
+    /// again. Returns false, after logging an error, when the run should stop. Server trouble during the check
+    /// (a 5xx tool or transport error) isn't a missing sign-in: the run stops without offering a sign-in, which
+    /// would drop working tokens. Any other tool error (e.g. a refresh rejected as invalid_grant) offers it.
     /// </summary>
     private async Task<bool> EnsureSignedInAsync(AtlassianMcp mcp, Action onSignInAttempt)
     {
-        if (await mcp.IsSignedInAsync(CancellationToken.None))
+        SignInStatus status;
+        try
+        {
+            status = await mcp.CheckSignInAsync(CancellationToken.None);
+        }
+        catch (Exception ex) when (AtlassianMcp.ServerStatus(ex) != null)
+        {
+            LogServerTrouble(ex.Message);
+            return false;
+        }
+
+        if (status.IsSignedIn)
             return true;
+
+        if (status.IsServerTrouble)
+        {
+            LogServerTrouble(status.ToolError);
+            return false;
+        }
 
         if (!await ConfirmSignInAgain())
         {
@@ -389,20 +425,38 @@ public partial class MainWindow : Window
         }
 
         onSignInAttempt();
+        using var cts = new CancellationTokenSource();
+        _preRunSignInCts = cts;
+        CancelSignInButton.IsVisible = true;
         try
         {
-            AppendLog("Signing in to Atlassian — finish the sign-in in your browser...");
-            await SignInAgain();
+            AppendLog("Waiting for you to finish signing in in your browser… (use 'Cancel sign-in' to stop)");
+            await SignInAgain(cts.Token);
+        }
+        catch (Exception) when (cts.IsCancellationRequested)
+        {
+            AppendLog("[ERROR] Atlassian sign-in was cancelled; the report was not run.");
+            return false;
         }
         catch (Exception ex)
         {
             AppendLog($"[ERROR] Atlassian sign-in failed: {ex.Message}");
             return false;
         }
+        finally
+        {
+            _preRunSignInCts = null;
+            CancelSignInButton.IsVisible = false;
+        }
 
         AppendLog("Signed in to Atlassian.");
         return true;
     }
+
+    private void LogServerTrouble(string? details) =>
+        AppendLog($"[ERROR] {AtlassianMcp.ServerTroubleMessage} Details: {details}");
+
+    private void CancelSignIn_Click(object? sender, RoutedEventArgs e) => _preRunSignInCts?.Cancel();
 
     /// <summary>The real report pipeline: Toggl fetch, Jira lookup through MCP, report file.</summary>
     private Task<bool> RunReportPipelineAsync(AppConfig config)

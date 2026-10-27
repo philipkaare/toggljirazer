@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Avalonia.Headless.XUnit;
+using ToggJirazer.Tests.Fakes;
 using ModelContextProtocol.Authentication;
 using ToggJirazer.Services.Atlassian;
 using Xunit;
@@ -137,6 +139,82 @@ public class AtlassianSignInControlTests : IDisposable
 
         Assert.Equal("Sign-in failed: boom", control.StatusText.Text);
         Assert.Equal("Sign in with Atlassian", control.SignInButton.Content);
+    }
+
+    private static void Click(Avalonia.Controls.Button button) =>
+        button.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Avalonia.Controls.Button.ClickEvent));
+
+    [AvaloniaFact]
+    public async Task Sign_in_shows_wait_message_url_and_cancel_button_and_cancel_stops_it()
+    {
+        var control = new AtlassianSignInControl();
+        var url = new Uri("https://auth.example.test/authorize?client_id=x");
+        var cancelled = new TaskCompletionSource();
+        control.SignIn = async (ct, showUri) =>
+        {
+            showUri(url);
+            try { await Task.Delay(Timeout.Infinite, ct); }
+            catch (OperationCanceledException) { cancelled.SetResult(); throw new AtlassianAuthException("Sign-in was cancelled or timed out.", abortsSignIn: true); }
+        };
+
+        Click(control.SignInButton);
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal("Cancel sign-in", control.SignInButton.Content);
+        Assert.True(control.SignInButton.IsEnabled);
+        Assert.Equal("Waiting for you to finish signing in in your browser…", control.StatusText.Text);
+        Assert.True(control.AuthorizationUrlPanel.IsVisible);
+        Assert.Equal(url.AbsoluteUri, control.AuthorizationUrlText.Text);
+
+        Click(control.SignInButton);
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal("Sign-in cancelled", control.StatusText.Text);
+        Assert.Equal("Sign in with Atlassian", control.SignInButton.Content);
+        Assert.False(control.AuthorizationUrlPanel.IsVisible);
+    }
+
+    [AvaloniaFact]
+    public async Task Status_refresh_during_a_waiting_sign_in_leaves_the_sign_in_state_alone()
+    {
+        var control = new AtlassianSignInControl();
+        var checks = 0;
+        control.LoadSitesIfSignedIn = () => { checks++; return Task.FromResult<IReadOnlyList<AtlassianSite>?>(null); };
+        control.SignIn = async (ct, showUri) =>
+        {
+            showUri(new Uri("https://auth.example.test/authorize"));
+            await Task.Delay(Timeout.Infinite, ct);
+        };
+        Click(control.SignInButton);
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        await control.RefreshStatusAsync();
+
+        Assert.Equal(0, checks);
+        Assert.True(control.IsSigningIn);
+        Assert.Equal("Cancel sign-in", control.SignInButton.Content);
+        Assert.Equal("Waiting for you to finish signing in in your browser…", control.StatusText.Text);
+        Assert.True(control.AuthorizationUrlPanel.IsVisible);
+        control.CancelSignIn();
+    }
+
+    [AvaloniaFact]
+    public async Task Status_check_loads_sites_with_a_single_sites_call()
+    {
+        var store = new AtlassianTokenStore(AuthPath);
+        await store.StoreTokensAsync(new TokenContainer { TokenType = "Bearer", AccessToken = "a", ObtainedAt = DateTimeOffset.UtcNow }, CancellationToken.None);
+        var tools = new FakeJiraTools((tool, _) => tool == "getAccessibleAtlassianResources"
+            ? JsonSerializer.SerializeToElement(new[] { new { id = "c1", url = "https://abc.atlassian.net", name = "ABC" } })
+            : throw new InvalidOperationException($"Unexpected tool call: {tool}"));
+        await using var mcp = new AtlassianMcp(store, _ => throw new InvalidOperationException("no browser"), tools);
+        var control = new AtlassianSignInControl();
+        control.Initialize(mcp);
+
+        await control.RefreshStatusAsync();
+
+        Assert.Single(tools.CallsTo("getAccessibleAtlassianResources"));
+        Assert.Equal("Signed in (ABC)", control.StatusText.Text);
     }
 
     [Fact]

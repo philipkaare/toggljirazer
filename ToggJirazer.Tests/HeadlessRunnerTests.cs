@@ -28,11 +28,65 @@ public class HeadlessRunnerTests
         var stderr = new StringWriter();
         var tools = UnusedTools();
 
-        var exitCode = await HeadlessRunner.RunAsync(Valid(), () => Task.FromResult(false), tools, stderr);
+        var exitCode = await HeadlessRunner.RunAsync(Valid(), () => Task.FromResult(SignInStatus.NotSignedIn), tools, stderr);
 
         Assert.Equal(2, exitCode);
         Assert.Equal(NotSignedIn, stderr.ToString().Trim());
         Assert.Empty(tools.Calls);
+    }
+
+    [Fact]
+    public async Task Headless_tool_error_during_sign_in_check_adds_details_line()
+    {
+        var stderr = new StringWriter();
+
+        var exitCode = await HeadlessRunner.RunAsync(Valid(),
+            () => Task.FromResult(new SignInStatus(null, "Internal server error")), UnusedTools(), stderr);
+
+        Assert.Equal(2, exitCode);
+        var lines = stderr.ToString().TrimEnd().Split(Environment.NewLine);
+        Assert.Equal([NotSignedIn, "Details: Internal server error"], lines);
+    }
+
+    private static Func<Task<SignInStatus>> SignedIn() =>
+        () => Task.FromResult(new SignInStatus([new AtlassianSite("cid-1", "https://x.atlassian.net", "X")]));
+
+    [Fact]
+    public async Task Headless_signed_in_runs_the_report_and_exits_0()
+    {
+        var stderr = new StringWriter();
+        var runs = 0;
+
+        var exitCode = await HeadlessRunner.RunAsync(Valid(), SignedIn(),
+            () => { runs++; return Task.CompletedTask; }, stderr);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(1, runs);
+        Assert.Equal("", stderr.ToString());
+    }
+
+    [Fact]
+    public async Task Headless_report_failure_exits_1_with_the_error()
+    {
+        var stderr = new StringWriter();
+
+        var exitCode = await HeadlessRunner.RunAsync(Valid(), SignedIn(),
+            () => throw new InvalidOperationException("Toggl said no"), stderr);
+
+        Assert.Equal(1, exitCode);
+        Assert.Equal("[ERROR] Toggl said no", stderr.ToString().Trim());
+    }
+
+    [Fact]
+    public async Task Headless_not_signed_in_does_not_run_the_report()
+    {
+        var runs = 0;
+
+        var exitCode = await HeadlessRunner.RunAsync(Valid(), () => Task.FromResult(SignInStatus.NotSignedIn),
+            () => { runs++; return Task.CompletedTask; }, new StringWriter());
+
+        Assert.Equal(2, exitCode);
+        Assert.Equal(0, runs);
     }
 
     [Fact]
@@ -44,7 +98,7 @@ public class HeadlessRunnerTests
         var checkedSignIn = false;
 
         var exitCode = await HeadlessRunner.RunAsync(config,
-            () => { checkedSignIn = true; return Task.FromResult(true); }, UnusedTools(), stderr);
+            () => { checkedSignIn = true; return Task.FromResult(new SignInStatus([])); }, UnusedTools(), stderr);
 
         Assert.Equal(2, exitCode);
         Assert.Contains("Pick your Atlassian site (Jira tab).", stderr.ToString());
@@ -54,13 +108,17 @@ public class HeadlessRunnerTests
 
 public class AtlassianSignInProbeTests
 {
+    private static readonly IReadOnlyList<AtlassianSite> Sites = [new("c1", "https://abc.atlassian.net", "ABC")];
+
     [Fact]
-    public async Task Probe_returns_true_when_sites_load()
+    public async Task Probe_returns_the_sites_when_they_load()
     {
         var resets = 0;
-        var signedIn = await AtlassianMcp.ProbeSignInAsync(() => Task.CompletedTask, () => { resets++; return Task.CompletedTask; });
+        var status = await AtlassianMcp.ProbeSignInAsync(() => Task.FromResult(Sites), () => { resets++; return Task.CompletedTask; });
 
-        Assert.True(signedIn);
+        Assert.True(status.IsSignedIn);
+        Assert.Same(Sites, status.Sites);
+        Assert.Null(status.ToolError);
         Assert.Equal(0, resets);
     }
 
@@ -68,11 +126,12 @@ public class AtlassianSignInProbeTests
     public async Task Probe_auth_failure_is_not_signed_in_and_resets()
     {
         var resets = 0;
-        var signedIn = await AtlassianMcp.ProbeSignInAsync(
+        var status = await AtlassianMcp.ProbeSignInAsync(
             () => throw new AtlassianAuthException("Not signed in"),
             () => { resets++; return Task.CompletedTask; });
 
-        Assert.False(signedIn);
+        Assert.False(status.IsSignedIn);
+        Assert.Null(status.ToolError);
         Assert.Equal(1, resets);
     }
 
@@ -81,11 +140,12 @@ public class AtlassianSignInProbeTests
     {
         // Resetting would dispose the connection a running report may be using.
         var resets = 0;
-        var signedIn = await AtlassianMcp.ProbeSignInAsync(
+        var status = await AtlassianMcp.ProbeSignInAsync(
             () => throw new AtlassianToolException("invalid_grant", statusCode: null),
             () => { resets++; return Task.CompletedTask; });
 
-        Assert.False(signedIn);
+        Assert.False(status.IsSignedIn);
+        Assert.Equal("invalid_grant", status.ToolError);
         Assert.Equal(0, resets);
     }
 
@@ -97,3 +157,4 @@ public class AtlassianSignInProbeTests
             () => Task.CompletedTask));
     }
 }
+

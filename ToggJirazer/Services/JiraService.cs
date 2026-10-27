@@ -40,22 +40,26 @@ public class JiraService
     }
 
     /// <summary>
-    /// Finds the Budget and Account custom field IDs by name, once per service instance. Tries the first
-    /// readable key of each distinct project in <paramref name="candidateKeys"/> (at most
-    /// <see cref="MaxFieldIdLookups"/> <c>getJiraIssue</c> calls in total), stopping as soon as both are found.
+    /// Finds the Budget and Account custom field IDs by name, once per service instance. Tries the keys in
+    /// <paramref name="candidateKeys"/> round-robin across projects (at most <see cref="MaxFieldIdLookups"/>
+    /// <c>getJiraIssue</c> calls in total), stopping as soon as both are found.
     /// Does nothing when there is no candidate key yet.
     /// </summary>
     private async Task ResolveFieldIdsAsync(IEnumerable<string> candidateKeys)
     {
         if (_fieldIdsResolved) return;
 
-        var keysByProject = candidateKeys
+        // Round-robin over projects: the first key of every project, then the second key of every
+        // project, and so on, so one big project lacking a field can't use up all the probes.
+        var keys = candidateKeys
             .Where(k => !string.IsNullOrWhiteSpace(k))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .GroupBy(ProjectOf, StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.ToList())
+            .SelectMany(g => g.Select((key, rank) => (key, rank)))
+            .OrderBy(x => x.rank) // stable: keeps project order within a rank
+            .Select(x => x.key)
             .ToList();
-        if (keysByProject.Count == 0) return;
+        if (keys.Count == 0) return;
 
         // An empty field name means "skip this field": no ID is requested and nothing is warned about.
         var wantBudget = !string.IsNullOrWhiteSpace(_config.BudgetFieldName);
@@ -68,42 +72,39 @@ public class JiraService
 
         _fieldIdsResolved = true;
         var lookups = 0;
-        foreach (var projectKeys in keysByProject)
+        // A key that can't be read (deleted, mistyped) and a readable key whose fields lack a wanted
+        // field (e.g. another issue type) both move on to the next key. Any other tool error (5xx,
+        // non-JSON, permission) propagates and stops the run rather than leaving the fields blank.
+        foreach (var key in keys)
         {
-            // One successful lookup per project; a key that can't be read (deleted, mistyped) moves on
-            // to the next key of the same project.
-            foreach (var key in projectKeys)
+            if ((_budgetFieldId != null || !wantBudget) && (_accountFieldId != null || !wantAccount)) break;
+            if (lookups >= MaxFieldIdLookups) break;
+            lookups++;
+
+            JsonElement root;
+            try
             {
-                if ((_budgetFieldId != null || !wantBudget) && (_accountFieldId != null || !wantAccount)) break;
-                if (lookups >= MaxFieldIdLookups) break;
-                lookups++;
-
-                JsonElement root;
-                try
+                root = await _tools.CallToolAsync(GetIssueTool, new Dictionary<string, object?>
                 {
-                    root = await _tools.CallToolAsync(GetIssueTool, new Dictionary<string, object?>
-                    {
-                        ["cloudId"] = _config.CloudId,
-                        ["issueIdOrKey"] = key,
-                        ["fields"] = new[] { "*all" },
-                        ["expand"] = "names",
-                        ["responseContentFormat"] = ContentFormat,
-                    });
-                }
-                catch (AtlassianToolException)
-                {
-                    continue;
-                }
-
-                var names = ReadFieldNames(root);
-                if (wantBudget)
-                    _budgetFieldId ??= names.FirstOrDefault(n =>
-                        string.Equals(n.Name, _config.BudgetFieldName, StringComparison.OrdinalIgnoreCase)).Id;
-                if (wantAccount)
-                    _accountFieldId ??= names.FirstOrDefault(n =>
-                        string.Equals(n.Name, _config.AccountFieldName, StringComparison.OrdinalIgnoreCase)).Id;
-                break;
+                    ["cloudId"] = _config.CloudId,
+                    ["issueIdOrKey"] = key,
+                    ["fields"] = new[] { "*all" },
+                    ["expand"] = "names",
+                    ["responseContentFormat"] = ContentFormat,
+                });
             }
+            catch (AtlassianToolException ex) when (IsKeyRejection(ex))
+            {
+                continue;
+            }
+
+            var names = ReadFieldNames(root);
+            if (wantBudget)
+                _budgetFieldId ??= names.FirstOrDefault(n =>
+                    string.Equals(n.Name, _config.BudgetFieldName, StringComparison.OrdinalIgnoreCase)).Id;
+            if (wantAccount)
+                _accountFieldId ??= names.FirstOrDefault(n =>
+                    string.Equals(n.Name, _config.AccountFieldName, StringComparison.OrdinalIgnoreCase)).Id;
         }
 
         if (wantBudget && _budgetFieldId == null)

@@ -1,3 +1,4 @@
+using System.Net.Http;
 using System.Globalization;
 using Avalonia.Headless.XUnit;
 using Avalonia.Threading;
@@ -10,17 +11,25 @@ using Xunit;
 
 namespace ToggJirazer.Tests;
 
-public class MainWindowTests
+public class MainWindowTests : IDisposable
 {
-    private static MainWindow CreateWindow()
-        => new(Path.Combine(Path.GetTempPath(), $"tj-win-{Guid.NewGuid():N}", "appsettings.json"));
+    // Every file a test writes (settings, tokens) lives under this folder, removed after each test.
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), $"tj-win-{Guid.NewGuid():N}");
 
-    private static AtlassianMcp NotSignedInMcp()
-        => new(new AtlassianTokenStore(Path.Combine(Path.GetTempPath(), $"tj-win-{Guid.NewGuid():N}", "atlassian-auth.json")),
+    public void Dispose()
+    {
+        if (Directory.Exists(_dir)) Directory.Delete(_dir, recursive: true);
+    }
+
+    private string NewPath(string fileName) => Path.Combine(_dir, Guid.NewGuid().ToString("N"), fileName);
+
+    private MainWindow CreateWindow() => new(NewPath("appsettings.json"));
+
+    private AtlassianMcp NotSignedInMcp()
+        => new(new AtlassianTokenStore(NewPath("atlassian-auth.json")),
             _ => throw new InvalidOperationException("Tests never open a browser."));
 
-    private static MainWindow CreateWindow(AtlassianMcp mcp)
-        => new(Path.Combine(Path.GetTempPath(), $"tj-win-{Guid.NewGuid():N}", "appsettings.json"), mcp);
+    private MainWindow CreateWindow(AtlassianMcp mcp) => new(NewPath("appsettings.json"), mcp);
 
     [AvaloniaFact]
     public void Jira_tab_round_trips_cloud_id_and_site()
@@ -67,6 +76,42 @@ public class MainWindowTests
     }
 
     [AvaloniaFact]
+    public async Task Accepted_sign_in_again_signs_in_then_runs_the_report()
+    {
+        var window = CreateWindow(NotSignedInMcp());
+        window.PopulateUiFromConfig(ValidConfig());
+        var order = new List<string>();
+        window.ConfirmSignInAgain = () => { order.Add("confirm"); return Task.FromResult(true); };
+        window.SignInAgain = _ => { order.Add("sign-in"); return Task.CompletedTask; };
+        window.RunReport = _ => { order.Add("run"); return Task.FromResult(false); };
+
+        await window.RunReportFlowAsync(sendEmail: false);
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal(["confirm", "sign-in", "run"], order);
+        Assert.Contains("Signed in to Atlassian.", window.LogTextBox.Text);
+        Assert.DoesNotContain("[ERROR]", window.LogTextBox.Text);
+    }
+
+    [AvaloniaFact]
+    public async Task Failed_sign_in_again_logs_error_and_skips_the_report()
+    {
+        var window = CreateWindow(NotSignedInMcp());
+        window.PopulateUiFromConfig(ValidConfig());
+        window.ConfirmSignInAgain = () => Task.FromResult(true);
+        window.SignInAgain = _ => throw new AtlassianAuthException("Browser closed");
+        var reportRuns = 0;
+        window.RunReport = _ => { reportRuns++; return Task.FromResult(true); };
+
+        await window.RunReportFlowAsync(sendEmail: false);
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal(0, reportRuns);
+        Assert.Contains("[ERROR] Atlassian sign-in failed: Browser closed", window.LogTextBox.Text);
+        Assert.False(window.CancelSignInButton.IsVisible);
+    }
+
+    [AvaloniaFact]
     public async Task Run_logs_error_without_atlassian_connection()
     {
         var window = CreateWindow();
@@ -87,7 +132,7 @@ public class MainWindowTests
         var window = CreateWindow(NotSignedInMcp());
         window.PopulateUiFromConfig(ValidConfig());
         window.ConfirmSignInAgain = () => Task.FromResult(true);
-        window.SignInAgain = () => Task.CompletedTask;
+        window.SignInAgain = _ => Task.CompletedTask;
         bool? enabledDuringRun = null;
         window.RunReport = _ => { enabledDuringRun = window.JiraSignIn.IsEnabled; return Task.FromResult(false); };
 
@@ -104,7 +149,7 @@ public class MainWindowTests
         var window = CreateWindow(NotSignedInMcp());
         window.PopulateUiFromConfig(ValidConfig());
         window.ConfirmSignInAgain = () => Task.FromResult(true);
-        window.SignInAgain = () => { window.JiraSignIn.StatusText.Text = "signed in by test"; return Task.CompletedTask; };
+        window.SignInAgain = _ => { window.JiraSignIn.StatusText.Text = "signed in by test"; return Task.CompletedTask; };
         string? statusDuringRun = null;
         window.RunReport = _ => { statusDuringRun = window.JiraSignIn.StatusText.Text; return Task.FromResult(false); };
 
@@ -114,6 +159,160 @@ public class MainWindowTests
         Assert.Equal("signed in by test", statusDuringRun);
         // The refresh after the run finds no stored tokens.
         Assert.Equal("Not signed in", window.JiraSignIn.StatusText.Text);
+    }
+
+    [AvaloniaFact]
+    public async Task Pre_run_sign_in_can_be_cancelled_from_the_log_area()
+    {
+        var window = CreateWindow(NotSignedInMcp());
+        window.PopulateUiFromConfig(ValidConfig());
+        window.ConfirmSignInAgain = () => Task.FromResult(true);
+        var signInCancelled = false;
+        window.SignInAgain = async ct =>
+        {
+            try { await Task.Delay(Timeout.Infinite, ct); }
+            catch (OperationCanceledException) { signInCancelled = true; throw new AtlassianAuthException("Sign-in was cancelled or timed out.", abortsSignIn: true); }
+        };
+        var reportRuns = 0;
+        window.RunReport = _ => { reportRuns++; return Task.FromResult(true); };
+        Assert.False(window.CancelSignInButton.IsVisible);
+
+        var flow = window.RunReportFlowAsync(sendEmail: false);
+        for (var i = 0; i < 50 && !window.CancelSignInButton.IsVisible; i++)
+        {
+            Dispatcher.UIThread.RunJobs();
+            await Task.Delay(10);
+        }
+        Assert.True(window.CancelSignInButton.IsVisible);
+
+        window.CancelSignInButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Avalonia.Controls.Button.ClickEvent));
+        await flow.WaitAsync(TimeSpan.FromSeconds(5));
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.True(signInCancelled);
+        Assert.Equal(0, reportRuns);
+        Assert.False(window.CancelSignInButton.IsVisible);
+        Assert.Contains("Atlassian sign-in was cancelled", window.LogTextBox.Text);
+    }
+
+    [AvaloniaFact]
+    public async Task Setup_and_report_buttons_are_disabled_while_the_jira_tab_sign_in_waits()
+    {
+        var window = CreateWindow(NotSignedInMcp());
+        window.PopulateUiFromConfig(ValidConfig());
+        var cancelled = new TaskCompletionSource();
+        window.JiraSignIn.SignIn = async (ct, _) =>
+        {
+            try { await Task.Delay(Timeout.Infinite, ct); }
+            catch (OperationCanceledException) { cancelled.TrySetResult(); throw; }
+        };
+        var reportRuns = 0;
+        window.RunReport = _ => { reportRuns++; return Task.FromResult(true); };
+        var wizardShown = false;
+        window.ShowWizard = _ => { wizardShown = true; return Task.FromResult<AppConfig?>(null); };
+
+        window.JiraSignIn.SignInButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Avalonia.Controls.Button.ClickEvent));
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.False(window.SetupButton.IsEnabled);
+        Assert.False(window.RunButton.IsEnabled);
+        Assert.False(window.SendEmailNowButton.IsEnabled);
+        // The control's own "Cancel sign-in" stays usable.
+        Assert.True(window.JiraSignIn.IsEnabled);
+        Assert.True(window.JiraSignIn.SignInButton.IsEnabled);
+        // Nor can a run or the wizard start another way while the sign-in waits.
+        await window.RunReportFlowAsync(sendEmail: false);
+        await window.OpenSetupAsync();
+        Assert.Equal(0, reportRuns);
+        Assert.False(wizardShown);
+
+        window.JiraSignIn.SignInButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Avalonia.Controls.Button.ClickEvent));
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        for (var i = 0; i < 50 && !window.RunButton.IsEnabled; i++)
+        {
+            Dispatcher.UIThread.RunJobs();
+            await Task.Delay(10);
+        }
+
+        Assert.True(window.SetupButton.IsEnabled);
+        Assert.True(window.RunButton.IsEnabled);
+        Assert.True(window.SendEmailNowButton.IsEnabled);
+    }
+
+    [AvaloniaFact]
+    public async Task Run_stops_without_offering_sign_in_when_the_sign_in_check_hits_a_tool_error()
+    {
+        var store = new AtlassianTokenStore(NewPath("atlassian-auth.json"));
+        await store.StoreTokensAsync(new TokenContainer { TokenType = "Bearer", AccessToken = "a", ObtainedAt = DateTimeOffset.UtcNow }, CancellationToken.None);
+        var tools = new ToggJirazer.Tests.Fakes.FakeJiraTools((_, _) => throw new AtlassianToolException("Internal server error", 500));
+        await using var mcp = new AtlassianMcp(store, _ => throw new InvalidOperationException("Tests never open a browser."), tools);
+        var window = CreateWindow(mcp);
+        window.PopulateUiFromConfig(ValidConfig());
+        var prompted = false;
+        var reportRuns = 0;
+        window.ConfirmSignInAgain = () => { prompted = true; return Task.FromResult(true); };
+        window.SignInAgain = _ => throw new InvalidOperationException("Must not sign in again.");
+        window.RunReport = _ => { reportRuns++; return Task.FromResult(true); };
+
+        await window.RunReportFlowAsync(sendEmail: false);
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.False(prompted);
+        Assert.Equal(0, reportRuns);
+        Assert.Contains("[ERROR] Atlassian is having trouble right now — try again in a moment. Details: Internal server error",
+            window.LogTextBox.Text);
+        Assert.True(store.HasTokens); // the working sign-in is kept
+    }
+
+    private async Task<(MainWindow Window, AtlassianTokenStore Store)> WindowWhoseSignInCheckThrowsAsync(Exception failure)
+    {
+        var store = new AtlassianTokenStore(NewPath("atlassian-auth.json"));
+        await store.StoreTokensAsync(new TokenContainer { TokenType = "Bearer", AccessToken = "a", ObtainedAt = DateTimeOffset.UtcNow }, CancellationToken.None);
+        var tools = new ToggJirazer.Tests.Fakes.FakeJiraTools((_, _) => throw failure);
+        var mcp = new AtlassianMcp(store, _ => throw new InvalidOperationException("Tests never open a browser."), tools);
+        var window = CreateWindow(mcp);
+        window.PopulateUiFromConfig(ValidConfig());
+        return (window, store);
+    }
+
+    [AvaloniaFact]
+    public async Task Run_stops_without_offering_sign_in_when_the_sign_in_check_hits_wrapped_transport_5xx()
+    {
+        var (window, store) = await WindowWhoseSignInCheckThrowsAsync(new ModelContextProtocol.McpException("Transport error",
+            new HttpRequestException("Service unavailable", null, System.Net.HttpStatusCode.ServiceUnavailable)));
+        var prompted = false;
+        var reportRuns = 0;
+        window.ConfirmSignInAgain = () => { prompted = true; return Task.FromResult(true); };
+        window.SignInAgain = _ => throw new InvalidOperationException("Must not sign in again.");
+        window.RunReport = _ => { reportRuns++; return Task.FromResult(true); };
+
+        await window.RunReportFlowAsync(sendEmail: false);
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.False(prompted);
+        Assert.Equal(0, reportRuns);
+        Assert.Contains("[ERROR] Atlassian is having trouble right now — try again in a moment. Details: Transport error",
+            window.LogTextBox.Text);
+        Assert.True(store.HasTokens);
+    }
+
+    [AvaloniaFact]
+    public async Task Sign_in_check_tool_error_without_server_status_offers_sign_in_again()
+    {
+        // e.g. a failed token refresh (invalid_grant) that the SDK reports as a tool error.
+        var (window, _) = await WindowWhoseSignInCheckThrowsAsync(new AtlassianToolException("invalid_grant", statusCode: null));
+        var prompted = false;
+        var reportRuns = 0;
+        window.ConfirmSignInAgain = () => { prompted = true; return Task.FromResult(false); };
+        window.RunReport = _ => { reportRuns++; return Task.FromResult(true); };
+
+        await window.RunReportFlowAsync(sendEmail: false);
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.True(prompted);
+        Assert.Equal(0, reportRuns);
+        Assert.DoesNotContain("having trouble", window.LogTextBox.Text);
+        Assert.Contains("Not signed in to Atlassian", window.LogTextBox.Text);
     }
 
     private static AppConfig ValidConfig() => new()
@@ -206,10 +405,11 @@ public class MainWindowTests
     // Setup wizard
     // -------------------------------------------------------------------------
 
-    private static string NewSettingsPath()
+    private string NewSettingsPath()
     {
-        var dir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"tj-win-{Guid.NewGuid():N}"));
-        return Path.Combine(dir.FullName, "appsettings.json");
+        var path = NewPath("appsettings.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        return path;
     }
 
     [AvaloniaFact]
@@ -300,7 +500,7 @@ public class MainWindowTests
     [Fact]
     public async Task HasStoredSignIn_reflects_the_token_file()
     {
-        var store = new AtlassianTokenStore(Path.Combine(Path.GetTempPath(), $"tj-win-{Guid.NewGuid():N}", "atlassian-auth.json"));
+        var store = new AtlassianTokenStore(NewPath("atlassian-auth.json"));
         await using var mcp = new AtlassianMcp(store, _ => throw new InvalidOperationException("Tests never open a browser."));
         Assert.False(mcp.HasStoredSignIn);
 

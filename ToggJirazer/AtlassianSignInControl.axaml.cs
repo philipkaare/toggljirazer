@@ -1,21 +1,26 @@
 using Avalonia.Controls;
 using Avalonia.Interactivity;
+using Avalonia.Threading;
 using ToggJirazer.Services.Atlassian;
 
 namespace ToggJirazer;
 
 /// <summary>
 /// The Atlassian sign-in rows: a "Sign in with Atlassian" / "Sign out" button, a status line and
-/// the Site dropdown. A browser opens only when the user clicks "Sign in with Atlassian".
+/// the Site dropdown. A browser opens only when the user clicks "Sign in with Atlassian"; while it waits,
+/// the button is "Cancel sign-in" and the authorization URL is shown for copying.
 /// </summary>
 public partial class AtlassianSignInControl : UserControl
 {
     private const string SignInText = "Sign in with Atlassian";
     private const string SignOutText = "Sign out";
     private const string NotSignedInText = "Not signed in";
+    private const string CancelSignInText = "Cancel sign-in";
+    private const string WaitingText = "Waiting for you to finish signing in in your browser…";
 
     private AtlassianMcp? _mcp;
     private bool _signedIn;
+    private CancellationTokenSource? _signInCts; // set while an interactive sign-in is in progress
     private int _refreshGeneration;
     // The configured site; used until (and unless) it matches a loaded site, so it survives a save before sign-in.
     private string _cloudId = string.Empty;
@@ -30,8 +35,17 @@ public partial class AtlassianSignInControl : UserControl
     /// <summary>The check behind <see cref="RefreshStatusAsync"/>: the sites when signed in, otherwise null. Replaceable by tests.</summary>
     internal Func<Task<IReadOnlyList<AtlassianSite>?>> LoadSitesIfSignedIn { get; set; }
 
+    /// <summary>The interactive sign-in (token, show-URL callback). Defaults to the MCP sign-in; replaceable by tests.</summary>
+    internal Func<CancellationToken, Action<Uri>, Task>? SignIn { get; set; }
+
     /// <summary>Raised after the user signs in or out from this control.</summary>
     public event EventHandler? SignInChanged;
+
+    /// <summary>Raised when an interactive sign-in starts waiting for the browser, and again when it ends.</summary>
+    public event EventHandler? SigningInChanged;
+
+    /// <summary>True while an interactive sign-in waits for the user to finish in the browser.</summary>
+    public bool IsSigningIn => _signInCts != null;
 
     /// <summary>Whether the last status check (or sign-in) found a working sign-in.</summary>
     public bool IsSignedIn => _signedIn;
@@ -54,10 +68,12 @@ public partial class AtlassianSignInControl : UserControl
 
     /// <summary>
     /// Checks the stored sign-in without opening a browser and loads the sites when signed in.
-    /// Never throws: a failed check is shown in the status line.
+    /// Never throws: a failed check is shown in the status line. Does nothing while an interactive sign-in
+    /// waits; the sign-in refreshes the status itself when it ends.
     /// </summary>
     public async Task RefreshStatusAsync()
     {
+        if (_signInCts != null) return;
         var generation = ++_refreshGeneration;
         try
         {
@@ -82,11 +98,8 @@ public partial class AtlassianSignInControl : UserControl
         }
     }
 
-    private async Task<IReadOnlyList<AtlassianSite>?> LoadSitesFromMcpAsync()
-    {
-        if (_mcp == null || !await _mcp.IsSignedInAsync(CancellationToken.None)) return null;
-        return await _mcp.GetSitesAsync(CancellationToken.None);
-    }
+    private Task<IReadOnlyList<AtlassianSite>?> LoadSitesFromMcpAsync() =>
+        _mcp?.TryGetSitesAsync(CancellationToken.None) ?? Task.FromResult<IReadOnlyList<AtlassianSite>?>(null);
 
     /// <summary>
     /// Fills the Site dropdown and re-applies the configured selection. When the configured site isn't
@@ -145,38 +158,110 @@ public partial class AtlassianSignInControl : UserControl
         UpdateSignedInStatus();
     }
 
+    /// <summary>
+    /// Cancels a waiting interactive sign-in (stops the browser-callback listener). Does nothing when no
+    /// sign-in is waiting. Called when the window hosting the control closes.
+    /// </summary>
+    internal void CancelSignIn() => _signInCts?.Cancel();
+
     private async void SignInButton_Click(object? sender, RoutedEventArgs e)
     {
-        if (_mcp == null)
+        // While signing in, the button is "Cancel sign-in".
+        if (_signInCts != null)
+        {
+            CancelSignIn();
+            return;
+        }
+
+        if (_signedIn && _mcp != null)
+        {
+            await SignOutAsync(_mcp);
+            return;
+        }
+
+        var signIn = SignIn ?? (_mcp == null ? null : _mcp.SignInAsync);
+        if (signIn == null)
         {
             ShowSignedOut(NotSignedInText);
             return;
         }
 
-        var signingOut = _signedIn;
-        SignInButton.IsEnabled = false;
+        await SignInAsync(signIn);
+    }
+
+    private async Task SignInAsync(Func<CancellationToken, Action<Uri>, Task> signIn)
+    {
+        using var cts = new CancellationTokenSource();
+        _signInCts = cts;
+        SigningInChanged?.Invoke(this, EventArgs.Empty);
+        _refreshGeneration++; // a status check still in flight must not overwrite the sign-in state
+        SignInButton.Content = CancelSignInText;
+        StatusText.Text = WaitingText;
         try
         {
-            if (signingOut)
-            {
-                await _mcp.SignOutAsync();
-            }
-            else
-            {
-                StatusText.Text = "Signing in — finish in your browser…";
-                await _mcp.SignInAsync(CancellationToken.None);
-            }
-
+            await signIn(cts.Token, uri => RunOnUiThread(() => ShowAuthorizationUrl(uri)));
+            EndSigningIn();
+            HideAuthorizationUrl();
+            SignInButton.IsEnabled = false; // nothing to cancel any more while the status loads
             await RefreshStatusAsync();
             SignInChanged?.Invoke(this, EventArgs.Empty);
         }
         catch (Exception ex)
         {
-            ShowSignInFailed(signingOut ? $"Sign-out failed: {ex.Message}" : $"Sign-in failed: {ex.Message}");
+            ShowSignInFailed(cts.IsCancellationRequested ? "Sign-in cancelled" : $"Sign-in failed: {ex.Message}");
+        }
+        finally
+        {
+            EndSigningIn();
+            HideAuthorizationUrl();
+            SignInButton.IsEnabled = true;
+            if (!_signedIn) SignInButton.Content = SignInText;
+        }
+    }
+
+    private void EndSigningIn()
+    {
+        if (_signInCts == null) return;
+        _signInCts = null;
+        SigningInChanged?.Invoke(this, EventArgs.Empty);
+    }
+
+    private async Task SignOutAsync(AtlassianMcp mcp)
+    {
+        SignInButton.IsEnabled = false;
+        try
+        {
+            await mcp.SignOutAsync();
+            await RefreshStatusAsync();
+            SignInChanged?.Invoke(this, EventArgs.Empty);
+        }
+        catch (Exception ex)
+        {
+            ShowSignInFailed($"Sign-out failed: {ex.Message}");
         }
         finally
         {
             SignInButton.IsEnabled = true;
         }
+    }
+
+    private void ShowAuthorizationUrl(Uri uri)
+    {
+        // A URL arriving after the sign-in ended (or was cancelled) is no longer useful.
+        if (_signInCts == null) return;
+        AuthorizationUrlText.Text = uri.AbsoluteUri;
+        AuthorizationUrlPanel.IsVisible = true;
+    }
+
+    private void HideAuthorizationUrl()
+    {
+        AuthorizationUrlPanel.IsVisible = false;
+        AuthorizationUrlText.Text = string.Empty;
+    }
+
+    private static void RunOnUiThread(Action action)
+    {
+        if (Dispatcher.UIThread.CheckAccess()) action();
+        else Dispatcher.UIThread.Post(action);
     }
 }

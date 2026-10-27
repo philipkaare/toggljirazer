@@ -1,0 +1,21 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="ToggJirazer.Setup.Steps.TogglProjectStep">
+
+    <StackPanel>
+        <Grid ColumnDefinitions="120,*" RowDefinitions="Auto,Auto,Auto">
+            <Label Grid.Row="0" Grid.Column="0" Content="Organization:"/>
+            <ComboBox Grid.Row="0" Grid.Column="1" x:Name="OrganizationCombo"
+                      SelectionChanged="OrganizationCombo_SelectionChanged"/>
+
+            <Label Grid.Row="1" Grid.Column="0" Content="Workspace:"/>
+            <ComboBox Grid.Row="1" Grid.Column="1" x:Name="WorkspaceCombo"
+                      SelectionChanged="WorkspaceCombo_SelectionChanged"/>
+
+            <Label Grid.Row="2" Grid.Column="0" Content="Project:"/>
+            <ComboBox Grid.Row="2" Grid.Column="1" x:Name="ProjectCombo"
+                      SelectionChanged="ProjectCombo_SelectionChanged"/>
+        </Grid>
+        <TextBlock x:Name="ProjectStatusText" Classes="note"/>
+    </StackPanel>
+</UserControl>

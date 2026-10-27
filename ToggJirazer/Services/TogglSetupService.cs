@@ -26,6 +26,7 @@ public sealed class TogglSetupService : IDisposable
     private const string WrongPasswordMessage =
         "Wrong email or password. If you sign in to Toggl with Google, Apple or SSO, use an API token instead.";
     private const string TokenRejectedMessage = "That API token was not accepted by Toggl.";
+    private const string TimeoutMessage = "Toggl did not answer in time — try again.";
 
     private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
 
@@ -101,6 +102,11 @@ public sealed class TogglSetupService : IDisposable
         catch (HttpRequestException ex)
         {
             throw new TogglSetupException($"Could not reach Toggl: {Scrub(ex.Message, secret, credentials)}");
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // HttpClient.Timeout surfaces as a cancellation nobody asked for.
+            throw new TogglSetupException(TimeoutMessage);
         }
 
         using (response)

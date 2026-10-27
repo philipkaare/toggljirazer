@@ -1,0 +1,11 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:ToggJirazer"
+             x:Class="ToggJirazer.Setup.Steps.JiraSignInStep">
+
+    <StackPanel>
+        <TextBlock TextWrapping="Wrap" Margin="0,0,0,8"
+                   Text="Sign in with your Atlassian account in the browser, then pick your Jira site."/>
+        <local:AtlassianSignInControl x:Name="JiraSignIn"/>
+    </StackPanel>
+</UserControl>
