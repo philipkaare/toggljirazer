@@ -185,12 +185,7 @@
                              ToolTip="{}{month} and {year} are replaced with the report month (Danish) and year"/>
 
                     <StackPanel Grid.Row="9" Grid.Column="1" Orientation="Horizontal" Margin="0,8,0,0">
-                        <Button x:Name="SendEmailNowButton" Content="Send Report by Email Now"
-                                Margin="0,0,16,0" Click="SendEmailNow_Click"/>
-                        <CheckBox x:Name="AutoSendCheckBox" Content="Send automatically every month"
-                                  VerticalAlignment="Center"
-                                  Checked="AutoSend_Checked" Unchecked="AutoSend_Unchecked"
-                                  ToolTip="Registers a daily 09:00 scheduled task; the report is emailed once per month, on the first day this PC is on. Automatic sending starts with next month's report — the currently ongoing month is not sent automatically."/>
+                        <Button x:Name="SendEmailNowButton" Content="Send Report by Email Now" Click="SendEmailNow_Click"/>
                     </StackPanel>
                 </Grid>
             </TabItem>

@@ -13,7 +13,6 @@ public partial class MainWindow : Window
     private readonly SettingsService _settingsService;
     private bool _isRunning;
     private string? _lastOutputPath;
-    private bool _suppressAutoSendEvents;
 
     private static readonly string SettingsPath =
         Path.Combine(AppContext.BaseDirectory, "appsettings.json");
@@ -23,22 +22,6 @@ public partial class MainWindow : Window
         InitializeComponent();
         _settingsService = new SettingsService(SettingsPath);
         PopulateUiFromConfig(_settingsService.Load());
-        Loaded += MainWindow_Loaded;
-    }
-
-    private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            var enabled = await Task.Run(ScheduledTaskService.IsEnabled);
-            _suppressAutoSendEvents = true;
-            AutoSendCheckBox.IsChecked = enabled;
-            _suppressAutoSendEvents = false;
-        }
-        catch
-        {
-            // Leave unchecked if the query fails; toggling will surface any real error.
-        }
     }
 
     // -------------------------------------------------------------------------
@@ -245,8 +228,8 @@ public partial class MainWindow : Window
                 }
                 else
                 {
-                    var subject = AutomationLogic.ResolvePlaceholders(config.Email.Subject, endDate);
-                    var body = AutomationLogic.ResolvePlaceholders(config.Email.Body, endDate);
+                    var subject = EmailTemplate.ResolvePlaceholders(config.Email.Subject, endDate);
+                    var body = EmailTemplate.ResolvePlaceholders(config.Email.Body, endDate);
                     AppendLog($"Sending email to {string.Join(", ", EmailService.ParseRecipients(config.Email.Recipients))}...");
                     await Task.Run(async () => await EmailService.SendReportAsync(
                         config.Email, subject, body, config.Report.OutputFile));
@@ -275,47 +258,6 @@ public partial class MainWindow : Window
             SaveButton.IsEnabled = true;
             SendEmailNowButton.IsEnabled = true;
             _isRunning = false;
-        }
-    }
-
-    private async void AutoSend_Checked(object sender, RoutedEventArgs e)
-    {
-        if (_suppressAutoSendEvents) return;
-        try
-        {
-            await Task.Run(ScheduledTaskService.Enable);
-
-            // Seed the state so automation starts with next month's report — otherwise
-            // ShouldSend(null, today) is true and the very next 09:00 run would immediately
-            // email the previous month's report, likely duplicating a manually-sent one.
-            new AutomationStateStore(AppContext.BaseDirectory)
-                .Save(new AutomationState { LastSentPeriod = AutomationLogic.GetTargetPeriod(DateTime.Today) });
-
-            AppendLog($"Daily automatic send enabled (task '{ScheduledTaskService.TaskName}', 09:00; a missed run fires when the PC is next on). The first automatic email covers {DateTime.Today:MMMM} and is sent at the start of next month — use 'Send Report by Email Now' if you want last month's report sent now.");
-        }
-        catch (Exception ex)
-        {
-            AppendLog($"[ERROR] {ex.Message}");
-            _suppressAutoSendEvents = true;
-            AutoSendCheckBox.IsChecked = false;
-            _suppressAutoSendEvents = false;
-        }
-    }
-
-    private async void AutoSend_Unchecked(object sender, RoutedEventArgs e)
-    {
-        if (_suppressAutoSendEvents) return;
-        try
-        {
-            await Task.Run(ScheduledTaskService.Disable);
-            AppendLog("Daily automatic send disabled.");
-        }
-        catch (Exception ex)
-        {
-            AppendLog($"[ERROR] {ex.Message}");
-            _suppressAutoSendEvents = true;
-            AutoSendCheckBox.IsChecked = true;
-            _suppressAutoSendEvents = false;
         }
     }
 

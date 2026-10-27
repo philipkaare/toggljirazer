@@ -1,7 +1,6 @@
 using System.IO;
 using ToggJirazer.Cli;
 using ToggJirazer.Services;
-using ToggJirazer.Tui;
 
 namespace ToggJirazer;
 
@@ -24,12 +23,7 @@ internal static class Program
 
     private static async Task<int> RunAsync(string[] args)
     {
-#if WINDOWS
-        const bool windowsGuiAvailable = true;
-#else
-        const bool windowsGuiAvailable = false;
-#endif
-        var mode = ArgParser.Resolve(args, Console.IsInputRedirected, Console.IsOutputRedirected, windowsGuiAvailable);
+        var mode = ArgParser.Resolve(args, Console.IsInputRedirected, Console.IsOutputRedirected);
         var settings = new SettingsService(SettingsPath);
 
         switch (mode)
@@ -38,28 +32,17 @@ internal static class Program
                 PrintUsage();
                 return 0;
 
-            case LaunchMode.Auto:
-                return await AutoSendRunner.RunAsync(AppContext.BaseDirectory);
+            case LaunchMode.AutoRemoved:
+                Console.WriteLine("Automatic monthly email has been removed. Delete the 'ToggJirazer AutoReport' scheduled task.");
+                return 0;
 
 #if WINDOWS
             case LaunchMode.Gui:
                 var app = new App();
                 return app.Run();
 #endif
-            case LaunchMode.Headless:
-                return await HeadlessRunner.RunAsync(settings.Load());
-
             default:
-                try
-                {
-                    AppTui.Run(settings, SettingsPath);
-                    return 0;
-                }
-                catch (Exception ex)
-                {
-                    Console.Error.WriteLine($"[ERROR] Could not start the TUI ({ex.Message}). Running headless instead.");
-                    return await HeadlessRunner.RunAsync(settings.Load());
-                }
+                return await HeadlessRunner.RunAsync(settings.Load());
         }
     }
 
@@ -69,9 +52,7 @@ internal static class Program
         Console.WriteLine();
         Console.WriteLine("Usage: ToggJirazer [options]");
         Console.WriteLine();
-        Console.WriteLine("  (no options)     Open the Windows GUI; run headless on macOS/Linux.");
-        Console.WriteLine("  --tui            Launch the interactive terminal UI (requires a terminal).");
-        Console.WriteLine("  --auto           Run the scheduled monthly email report.");
+        Console.WriteLine("  (no options)     Open the GUI.");
         Console.WriteLine("  --headless,--run Run the report non-interactively using appsettings.json.");
         Console.WriteLine("  --help, -h       Show this help.");
         Console.WriteLine();
