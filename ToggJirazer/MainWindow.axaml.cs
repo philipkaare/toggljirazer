@@ -8,6 +8,7 @@ using Avalonia.Threading;
 using ToggJirazer.Models;
 using ToggJirazer.Services;
 using ToggJirazer.Services.Atlassian;
+using ToggJirazer.Setup;
 
 namespace ToggJirazer;
 
@@ -18,6 +19,7 @@ public partial class MainWindow : Window
     private readonly SettingsService _settingsService;
     private readonly AtlassianMcp? _mcp;
     private bool _isRunning;
+    private bool _isSetupOpen;
     private string? _lastOutputPath;
     // Fields without UI controls (Jira custom field names) are carried through from here on Save.
     private AppConfig _loadedConfig = new();
@@ -33,7 +35,10 @@ public partial class MainWindow : Window
         ConfirmSignInAgain = ShowSignInAgainDialogAsync;
         RunReport = RunReportPipelineAsync;
         SignInAgain = () => _mcp!.SignInAsync(CancellationToken.None);
+        ShowWizard = ShowSetupWizardAsync;
+        HasAtlassianToken = () => _mcp?.HasStoredSignIn == true;
         PopulateUiFromConfig(_settingsService.Load());
+        Opened += MainWindow_Opened;
 
         if (mcp != null)
         {
@@ -51,6 +56,63 @@ public partial class MainWindow : Window
 
     /// <summary>Runs the report pipeline; true when a file was written. Replaceable by tests.</summary>
     internal Func<AppConfig, Task<bool>> RunReport { get; set; }
+
+    /// <summary>Shows the setup wizard; the draft on Finish, null on Cancel. Replaceable by tests.</summary>
+    internal Func<SetupWizardState, Task<AppConfig?>> ShowWizard { get; set; }
+
+    /// <summary>Whether an Atlassian sign-in is stored (no network). Replaceable by tests.</summary>
+    internal Func<bool> HasAtlassianToken { get; set; }
+
+    // -------------------------------------------------------------------------
+    // Setup wizard
+    // -------------------------------------------------------------------------
+
+    private async void MainWindow_Opened(object? sender, EventArgs e)
+    {
+        if (SetupWizardState.IsSetupIncomplete(_loadedConfig, HasAtlassianToken()))
+            await OpenSetupAsync();
+    }
+
+    /// <summary>
+    /// Opens the wizard on the window's current (possibly unsaved) settings. Finish saves the result and
+    /// refreshes the fields; Cancel changes nothing. The Jira tab's sign-in status is refreshed either way,
+    /// because signing in or out inside the wizard takes effect immediately.
+    /// </summary>
+    internal async Task OpenSetupAsync()
+    {
+        if (_isSetupOpen || _isRunning) return;
+        _isSetupOpen = true;
+        try
+        {
+            var result = await ShowWizard(new SetupWizardState(ReadConfigFromUi()));
+            if (result != null)
+            {
+                try
+                {
+                    _settingsService.Save(result);
+                    AppendLog("Settings saved.");
+                }
+                catch (Exception ex)
+                {
+                    AppendLog($"[ERROR] Could not save settings: {ex.Message}");
+                }
+                PopulateUiFromConfig(result);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"[ERROR] Setup failed: {ex.Message}");
+        }
+        finally
+        {
+            _isSetupOpen = false;
+        }
+
+        await JiraSignIn.RefreshStatusAsync();
+    }
+
+    private Task<AppConfig?> ShowSetupWizardAsync(SetupWizardState state)
+        => new SetupWizardWindow(state, _mcp, () => new TogglSetupService()).ShowDialog<AppConfig?>(this);
 
     // -------------------------------------------------------------------------
     // Settings helpers
@@ -151,6 +213,8 @@ public partial class MainWindow : Window
     // Button handlers
     // -------------------------------------------------------------------------
 
+    private async void Setup_Click(object? sender, RoutedEventArgs e) => await OpenSetupAsync();
+
     private void SaveSettings_Click(object? sender, RoutedEventArgs e)
     {
         try
@@ -225,6 +289,7 @@ public partial class MainWindow : Window
         _isRunning = true;
         RunButton.IsEnabled = false;
         SaveButton.IsEnabled = false;
+        SetupButton.IsEnabled = false;
         SendEmailNowButton.IsEnabled = false;
         // Signing in or out mid-run would drop the connection the run uses.
         JiraSignIn.IsEnabled = false;
@@ -301,6 +366,7 @@ public partial class MainWindow : Window
 
             RunButton.IsEnabled = true;
             SaveButton.IsEnabled = true;
+            SetupButton.IsEnabled = true;
             SendEmailNowButton.IsEnabled = true;
             JiraSignIn.IsEnabled = true;
             _isRunning = false;

@@ -1,0 +1,162 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:ToggJirazer"
+        x:Class="ToggJirazer.Setup.SetupWizardWindow"
+        Title="ToggJirazer setup" Width="600" Height="460"
+        MinWidth="520" MinHeight="400"
+        WindowStartupLocation="CenterOwner"
+        Icon="/Assets/toggjirazer.ico">
+
+    <Window.Styles>
+        <Style Selector="Label">
+            <Setter Property="VerticalAlignment" Value="Center"/>
+            <Setter Property="HorizontalAlignment" Value="Right"/>
+            <Setter Property="Padding" Value="0,0,4,0"/>
+        </Style>
+        <Style Selector="TextBox">
+            <Setter Property="VerticalContentAlignment" Value="Center"/>
+            <Setter Property="Margin" Value="0,3"/>
+        </Style>
+        <Style Selector="ComboBox">
+            <Setter Property="HorizontalAlignment" Value="Stretch"/>
+            <Setter Property="Margin" Value="0,3"/>
+        </Style>
+        <Style Selector="Button">
+            <Setter Property="Padding" Value="14,4"/>
+        </Style>
+        <Style Selector="HyperlinkButton">
+            <Setter Property="Padding" Value="0,2"/>
+        </Style>
+        <Style Selector="TextBlock.note">
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="Margin" Value="0,8,0,0"/>
+            <Setter Property="Opacity" Value="0.8"/>
+        </Style>
+    </Window.Styles>
+
+    <Grid Margin="16" RowDefinitions="Auto,Auto,*,Auto">
+
+        <TextBlock Grid.Row="0" x:Name="StepCounterText" Opacity="0.7" FontSize="12"/>
+        <TextBlock Grid.Row="1" x:Name="StepTitleText" FontSize="20" FontWeight="SemiBold" Margin="0,2,0,12"/>
+
+        <ScrollViewer Grid.Row="2" HorizontalScrollBarVisibility="Disabled">
+            <Panel>
+
+                <!-- 1. Welcome -->
+                <StackPanel x:Name="WelcomePanel">
+                    <TextBlock TextWrapping="Wrap">
+                        You need a Toggl account and an Atlassian account. The wizard signs you in to both,
+                        lets you pick your Toggl project, Atlassian site and Jira fields, and chooses where
+                        the report is saved. Your settings are saved when you click Finish.
+                    </TextBlock>
+                </StackPanel>
+
+                <!-- 2. Toggl sign-in -->
+                <StackPanel x:Name="TogglSignInPanel" IsVisible="False">
+                    <StackPanel x:Name="TogglSignedInPanel" Spacing="4" IsVisible="False">
+                        <TextBlock x:Name="TogglSignedInText" FontWeight="SemiBold"/>
+                        <HyperlinkButton x:Name="UseDifferentAccountLink" Content="Use a different account"
+                                         Click="UseDifferentAccount_Click"/>
+                    </StackPanel>
+
+                    <StackPanel x:Name="TogglFormPanel">
+                        <Grid ColumnDefinitions="120,*" RowDefinitions="Auto,Auto,Auto">
+                            <Label Grid.Row="0" Grid.Column="0" Content="Email:"/>
+                            <TextBox Grid.Row="0" Grid.Column="1" x:Name="TogglEmail"/>
+
+                            <Label Grid.Row="1" Grid.Column="0" Content="Password:"/>
+                            <TextBox Grid.Row="1" Grid.Column="1" x:Name="TogglPassword" PasswordChar="●" IsUndoEnabled="False"/>
+
+                            <Button Grid.Row="2" Grid.Column="1" x:Name="TogglSignInButton" Content="Sign in"
+                                    Margin="0,6,0,0" Click="TogglSignIn_Click"/>
+                        </Grid>
+                        <HyperlinkButton x:Name="UseTokenLink" Content="Use an API token instead"
+                                         Margin="120,8,0,0" Click="UseToken_Click"/>
+                    </StackPanel>
+
+                    <Grid x:Name="TogglTokenPanel" ColumnDefinitions="120,*,Auto" IsVisible="False" Margin="0,6,0,0">
+                        <Label Grid.Column="0" Content="API token:"/>
+                        <TextBox Grid.Column="1" x:Name="TogglTokenBox" PasswordChar="●" IsUndoEnabled="False" Margin="0,3,4,3"
+                                 Watermark="Paste the token from your Toggl profile"/>
+                        <Button Grid.Column="2" x:Name="CheckTokenButton" Content="Check token" Click="CheckToken_Click"/>
+                    </Grid>
+
+                    <TextBlock x:Name="TogglStatusText" Classes="note"/>
+                </StackPanel>
+
+                <!-- 3. Toggl project -->
+                <StackPanel x:Name="TogglProjectPanel" IsVisible="False">
+                    <Grid ColumnDefinitions="120,*" RowDefinitions="Auto,Auto,Auto">
+                        <Label Grid.Row="0" Grid.Column="0" Content="Organization:"/>
+                        <ComboBox Grid.Row="0" Grid.Column="1" x:Name="OrganizationCombo"
+                                  SelectionChanged="OrganizationCombo_SelectionChanged"/>
+
+                        <Label Grid.Row="1" Grid.Column="0" Content="Workspace:"/>
+                        <ComboBox Grid.Row="1" Grid.Column="1" x:Name="WorkspaceCombo"
+                                  SelectionChanged="WorkspaceCombo_SelectionChanged"/>
+
+                        <Label Grid.Row="2" Grid.Column="0" Content="Project:"/>
+                        <ComboBox Grid.Row="2" Grid.Column="1" x:Name="ProjectCombo"
+                                  SelectionChanged="ProjectCombo_SelectionChanged"/>
+                    </Grid>
+                    <TextBlock x:Name="ProjectStatusText" Classes="note"/>
+                </StackPanel>
+
+                <!-- 4. Jira sign-in -->
+                <StackPanel x:Name="JiraSignInPanel" IsVisible="False">
+                    <TextBlock TextWrapping="Wrap" Margin="0,0,0,8"
+                               Text="Sign in with your Atlassian account in the browser, then pick your Jira site."/>
+                    <local:AtlassianSignInControl x:Name="JiraSignIn"/>
+                </StackPanel>
+
+                <!-- 5. Jira fields -->
+                <StackPanel x:Name="JiraFieldsPanel" IsVisible="False">
+                    <Grid ColumnDefinitions="120,*" RowDefinitions="Auto,Auto">
+                        <Label Grid.Row="0" Grid.Column="0" Content="Budget field:"/>
+                        <Panel Grid.Row="0" Grid.Column="1">
+                            <ComboBox x:Name="BudgetCombo" SelectionChanged="FieldCombo_SelectionChanged"/>
+                            <TextBox x:Name="BudgetText" IsVisible="False"/>
+                        </Panel>
+
+                        <Label Grid.Row="1" Grid.Column="0" Content="Account field:"/>
+                        <Panel Grid.Row="1" Grid.Column="1">
+                            <ComboBox x:Name="AccountCombo" SelectionChanged="FieldCombo_SelectionChanged"/>
+                            <TextBox x:Name="AccountText" IsVisible="False"/>
+                        </Panel>
+                    </Grid>
+                    <TextBlock x:Name="FieldsNoteText" Classes="note"/>
+                </StackPanel>
+
+                <!-- 6. Report output -->
+                <StackPanel x:Name="ReportOutputPanel" IsVisible="False">
+                    <Grid ColumnDefinitions="120,*,Auto" RowDefinitions="Auto,Auto">
+                        <Label Grid.Row="0" Grid.Column="0" Content="Output file:"/>
+                        <TextBox Grid.Row="0" Grid.Column="1" x:Name="ReportOutputFile" Margin="0,3,4,3"/>
+                        <Button Grid.Row="0" Grid.Column="2" Content="Browse…" Click="Browse_Click"/>
+
+                        <Label Grid.Row="1" Grid.Column="0" Content="Format:"/>
+                        <ComboBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" x:Name="ReportFormat"
+                                  SelectionChanged="ReportFormat_SelectionChanged">
+                            <ComboBoxItem Content="xlsx"/>
+                            <ComboBoxItem Content="csv"/>
+                        </ComboBox>
+                    </Grid>
+                </StackPanel>
+
+                <!-- 7. Done -->
+                <StackPanel x:Name="DonePanel" IsVisible="False">
+                    <TextBlock x:Name="SummaryText" TextWrapping="Wrap" LineHeight="22"/>
+                    <TextBlock Classes="note" Text="Click Finish to save these settings."/>
+                </StackPanel>
+
+            </Panel>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8" Margin="0,12,0,0">
+            <Button x:Name="BackButton" Content="Back" Click="Back_Click"/>
+            <Button x:Name="NextButton" Content="Next" Click="Next_Click"/>
+            <Button x:Name="FinishButton" Content="Finish" IsVisible="False" Click="Finish_Click"/>
+            <Button x:Name="CancelButton" Content="Cancel" IsCancel="True" Click="Cancel_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>

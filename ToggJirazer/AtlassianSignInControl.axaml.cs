@@ -33,6 +33,9 @@ public partial class AtlassianSignInControl : UserControl
     /// <summary>Raised after the user signs in or out from this control.</summary>
     public event EventHandler? SignInChanged;
 
+    /// <summary>Whether the last status check (or sign-in) found a working sign-in.</summary>
+    public bool IsSignedIn => _signedIn;
+
     public string CloudId => SelectedSite?.CloudId ?? _cloudId;
 
     public string SiteUrl => SelectedSite?.Url ?? _siteUrl;

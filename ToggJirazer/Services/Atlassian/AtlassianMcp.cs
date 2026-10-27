@@ -37,6 +37,9 @@ public sealed class AtlassianMcp : IAsyncDisposable
         Tools = new McpJiraTools(this);
     }
 
+    /// <summary>Whether a sign-in is stored on disk. Does not check that it still works and makes no network call.</summary>
+    public bool HasStoredSignIn => _store.HasTokens;
+
     /// <summary>Non-interactive tools: never open a browser.</summary>
     public IJiraTools Tools { get; }
 

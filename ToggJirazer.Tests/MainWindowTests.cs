@@ -2,7 +2,10 @@ using System.Globalization;
 using Avalonia.Headless.XUnit;
 using Avalonia.Threading;
 using ToggJirazer.Models;
+using ToggJirazer.Services;
 using ToggJirazer.Services.Atlassian;
+using ToggJirazer.Setup;
+using ModelContextProtocol.Authentication;
 using Xunit;
 
 namespace ToggJirazer.Tests;
@@ -197,5 +200,112 @@ public class MainWindowTests
         window.PopulateUiFromConfig(new AppConfig { Report = new ReportConfig { Format = "pdf" } });
 
         Assert.Equal("xlsx", window.ReadConfigFromUi().Report.Format);
+    }
+
+    // -------------------------------------------------------------------------
+    // Setup wizard
+    // -------------------------------------------------------------------------
+
+    private static string NewSettingsPath()
+    {
+        var dir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"tj-win-{Guid.NewGuid():N}"));
+        return Path.Combine(dir.FullName, "appsettings.json");
+    }
+
+    [AvaloniaFact]
+    public async Task Setup_button_opens_wizard_and_saves_result()
+    {
+        var path = NewSettingsPath();
+        var window = new MainWindow(path);
+        var modified = ValidConfig();
+        modified.Toggl.ProjectId = 42;
+        modified.Report.OutputFile = "from-wizard.xlsx";
+        var calls = 0;
+        window.ShowWizard = _ => { calls++; return Task.FromResult<AppConfig?>(modified); };
+
+        window.SetupButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Avalonia.Controls.Button.ClickEvent));
+        Dispatcher.UIThread.RunJobs();
+        await window.OpenSetupAsync();
+
+        Assert.Equal(2, calls);
+        var saved = new SettingsService(path).Load();
+        Assert.Equal(42, saved.Toggl.ProjectId);
+        Assert.Equal("from-wizard.xlsx", saved.Report.OutputFile);
+        Assert.Equal("42", window.TogglProjectId.Text);
+        Assert.Equal("from-wizard.xlsx", window.ReportOutputFile.Text);
+    }
+
+    [AvaloniaFact]
+    public async Task Wizard_cancel_changes_nothing()
+    {
+        var path = NewSettingsPath();
+        new SettingsService(path).Save(ValidConfig());
+        var before = File.ReadAllBytes(path);
+        var window = new MainWindow(path);
+        window.ShowWizard = _ => Task.FromResult<AppConfig?>(null);
+
+        await window.OpenSetupAsync();
+
+        Assert.Equal(before, File.ReadAllBytes(path));
+        Assert.Equal("3", window.TogglProjectId.Text);
+    }
+
+    [AvaloniaFact]
+    public async Task Wizard_draft_starts_from_window_state()
+    {
+        var window = CreateWindow();
+        window.PopulateUiFromConfig(ValidConfig());
+        window.EmailSubject.Text = "Unsaved subject";
+        SetupWizardState? captured = null;
+        window.ShowWizard = state => { captured = state; return Task.FromResult<AppConfig?>(null); };
+
+        await window.OpenSetupAsync();
+
+        Assert.NotNull(captured);
+        Assert.Equal("Unsaved subject", captured!.Draft.Email.Subject);
+    }
+
+    [AvaloniaFact]
+    public void First_run_opens_wizard_when_incomplete()
+    {
+        var window = CreateWindow();
+        window.PopulateUiFromConfig(new AppConfig());
+        window.HasAtlassianToken = () => false;
+        var calls = 0;
+        window.ShowWizard = _ => { calls++; return Task.FromResult<AppConfig?>(null); };
+
+        window.Show();
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal(1, calls);
+        window.Close();
+    }
+
+    [AvaloniaFact]
+    public void Complete_config_does_not_open_wizard()
+    {
+        var window = CreateWindow();
+        window.PopulateUiFromConfig(ValidConfig());
+        window.HasAtlassianToken = () => true;
+        var calls = 0;
+        window.ShowWizard = _ => { calls++; return Task.FromResult<AppConfig?>(null); };
+
+        window.Show();
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal(0, calls);
+        window.Close();
+    }
+
+    [Fact]
+    public async Task HasStoredSignIn_reflects_the_token_file()
+    {
+        var store = new AtlassianTokenStore(Path.Combine(Path.GetTempPath(), $"tj-win-{Guid.NewGuid():N}", "atlassian-auth.json"));
+        await using var mcp = new AtlassianMcp(store, _ => throw new InvalidOperationException("Tests never open a browser."));
+        Assert.False(mcp.HasStoredSignIn);
+
+        await store.StoreTokensAsync(new TokenContainer { TokenType = "Bearer", AccessToken = "fake", ObtainedAt = DateTimeOffset.UtcNow }, CancellationToken.None);
+
+        Assert.True(mcp.HasStoredSignIn);
     }
 }

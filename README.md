@@ -27,6 +27,8 @@ ToggJirazer fetches detailed time entries from the [Toggl Track API](https://dev
 
 ## Configuration
 
+On first launch a setup wizard walks you through signing in to Toggl and Atlassian and picking your project, site, Jira fields and report file. Reopen it any time with **Setup…**.
+
 Settings are stored per user, outside the repository:
 
 - **Windows:** `%APPDATA%\ToggJirazer\appsettings.json`
