@@ -1,6 +1,7 @@
 using System.IO;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
 using ToggJirazer.Cli;
@@ -40,6 +41,8 @@ public partial class SetupWizardWindow : Window
     // Set while controls are filled from code, so their change handlers don't treat it as a user choice.
     private bool _filling;
     private bool _savedTokenChecked;
+    // True while a Toggl sign-in or token check runs: navigation waits for its answer.
+    private bool _togglBusy;
     // Bumped whenever the step changes or a list load starts; a load whose generation is stale is dropped.
     private int _loadGeneration;
 
@@ -69,6 +72,8 @@ public partial class SetupWizardWindow : Window
         JiraSignIn.SetSelection(Draft.Jira.CloudId, Draft.Jira.SiteUrl);
         JiraSignIn.SignInChanged += (_, _) => SyncJiraFromControl();
         JiraSignIn.SiteComboBox.SelectionChanged += (_, _) => SyncJiraFromControl();
+        TogglPassword.AddHandler(KeyDownEvent, TogglPassword_KeyDown, RoutingStrategies.Tunnel);
+        TogglTokenBox.AddHandler(KeyDownEvent, TogglTokenBox_KeyDown, RoutingStrategies.Tunnel);
 
         _ = ShowStepAsync();
     }
@@ -135,18 +140,21 @@ public partial class SetupWizardWindow : Window
     private void UpdateButtons()
     {
         var done = State.Step == SetupStep.Done;
-        BackButton.IsEnabled = State.CanGoBack;
+        BackButton.IsEnabled = State.CanGoBack && !_togglBusy;
         NextButton.IsVisible = !done;
-        NextButton.IsEnabled = State.CanGoNext;
+        NextButton.IsEnabled = State.CanGoNext && !_togglBusy;
         FinishButton.IsVisible = done;
     }
 
     private async void Next_Click(object? sender, RoutedEventArgs e)
     {
-        if (State.CanGoNext) await NextAsync();
+        if (State.CanGoNext && !_togglBusy) await NextAsync();
     }
 
-    private async void Back_Click(object? sender, RoutedEventArgs e) => await BackAsync();
+    private async void Back_Click(object? sender, RoutedEventArgs e)
+    {
+        if (!_togglBusy) await BackAsync();
+    }
 
     private void Finish_Click(object? sender, RoutedEventArgs e) => Close(Draft);
 
@@ -163,8 +171,10 @@ public partial class SetupWizardWindow : Window
             // Show who the saved token belongs to; a failed check keeps the token and offers the sign-in form.
             _savedTokenChecked = true;
             ShowTogglSignedIn("Checking your saved Toggl token…");
-            await RunTogglCheckAsync(s => s.ValidateTokenAsync(Draft.Toggl.ApiToken), busyText: string.Empty,
+            var answered = await RunTogglCheckAsync(s => s.ValidateTokenAsync(Draft.Toggl.ApiToken), busyText: string.Empty,
                 failurePrefix: "Your saved Toggl token could not be checked: ");
+            // The step changed before Toggl answered: check again when the step is shown next time.
+            if (!answered) _savedTokenChecked = false;
         }
         else if (!TogglSignedInPanel.IsVisible)
         {
@@ -198,32 +208,46 @@ public partial class SetupWizardWindow : Window
         await RunTogglCheckAsync(s => s.ValidateTokenAsync(token), "Checking token…");
     }
 
-    /// <summary>Runs a Toggl account check; on success uses its API token. Errors are shown inline, never thrown.</summary>
-    private async Task RunTogglCheckAsync(Func<TogglSetupService, Task<TogglAccount>> check, string busyText,
+    /// <summary>
+    /// Runs a Toggl account check; on success uses its API token. Errors are shown inline, never thrown.
+    /// Navigation is disabled until Toggl answers. Returns false when the step changed before the answer
+    /// arrived; that answer is dropped.
+    /// </summary>
+    private async Task<bool> RunTogglCheckAsync(Func<TogglSetupService, Task<TogglAccount>> check, string busyText,
         string failurePrefix = "")
     {
-        TogglSignInButton.IsEnabled = false;
-        CheckTokenButton.IsEnabled = false;
+        var generation = _loadGeneration;
+        SetTogglBusy(true);
         TogglStatusText.Text = busyText;
         try
         {
             using var service = _togglFactory();
             var account = await check(service);
+            if (generation != _loadGeneration) return false;
             Draft.Toggl.ApiToken = account.ApiToken;
             ShowTogglSignedIn($"Signed in as {(account.FullName.Length > 0 ? account.FullName : account.Email)}");
             TogglStatusText.Text = string.Empty;
         }
         catch (Exception ex)
         {
+            if (generation != _loadGeneration) return false;
             if (failurePrefix.Length > 0) ShowTogglForm();
             TogglStatusText.Text = failurePrefix + (ex is TogglSetupException ? ex.Message : $"Could not reach Toggl: {ex.Message}");
         }
         finally
         {
-            TogglSignInButton.IsEnabled = true;
-            CheckTokenButton.IsEnabled = true;
-            UpdateButtons();
+            SetTogglBusy(false);
         }
+        return true;
+    }
+
+    private void SetTogglBusy(bool busy)
+    {
+        _togglBusy = busy;
+        TogglSignInButton.IsEnabled = !busy;
+        CheckTokenButton.IsEnabled = !busy;
+        UseDifferentAccountLink.IsEnabled = !busy;
+        UpdateButtons();
     }
 
     private void ShowTogglSignedIn(string text)
@@ -259,6 +283,21 @@ public partial class SetupWizardWindow : Window
     private async void CheckToken_Click(object? sender, RoutedEventArgs e) => await CheckTogglTokenAsync();
 
     private void UseToken_Click(object? sender, RoutedEventArgs e) => ShowTokenEntry();
+
+    // Tunnel handlers: they run before the TextBox's own key handling.
+    private async void TogglPassword_KeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter || !TogglSignInButton.IsEnabled) return;
+        e.Handled = true;
+        await SignInToTogglAsync();
+    }
+
+    private async void TogglTokenBox_KeyDown(object? sender, KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter || !CheckTokenButton.IsEnabled) return;
+        e.Handled = true;
+        await CheckTogglTokenAsync();
+    }
 
     private void UseDifferentAccount_Click(object? sender, RoutedEventArgs e)
     {
@@ -381,6 +420,9 @@ public partial class SetupWizardWindow : Window
     {
         if (_filling) return;
         Draft.Toggl.OrganizationId = SelectedId(OrganizationCombo);
+        // The old workspace and project belong to the old organization.
+        Draft.Toggl.WorkspaceId = 0;
+        Draft.Toggl.ProjectId = 0;
         await OnOrganizationChosenAsync(Draft.Toggl.OrganizationId);
     }
 
@@ -388,6 +430,7 @@ public partial class SetupWizardWindow : Window
     {
         if (_filling) return;
         Draft.Toggl.WorkspaceId = SelectedId(WorkspaceCombo);
+        Draft.Toggl.ProjectId = 0;
         await OnWorkspaceChosenAsync(Draft.Toggl.WorkspaceId);
     }
 

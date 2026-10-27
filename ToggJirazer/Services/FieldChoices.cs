@@ -6,14 +6,20 @@ public static class FieldChoices
     public const string None = "(none)";
     private const string CurrentSuffix = " (current)";
 
+    /// <param name="currentName">
+    /// The saved field name. Empty or whitespace means "(none)" was chosen and selects "(none)";
+    /// null means there is no saved choice and selects <paramref name="defaultName"/> when listed.
+    /// </param>
     public static (IReadOnlyList<string> Items, int SelectedIndex) Build(
-        IReadOnlyList<string> siteFieldNames, string currentName, string defaultName)
+        IReadOnlyList<string> siteFieldNames, string? currentName, string defaultName)
     {
         var items = new List<string> { None };
         items.AddRange(siteFieldNames.Distinct(StringComparer.OrdinalIgnoreCase));
 
-        if (!string.IsNullOrEmpty(currentName))
+        if (currentName != null)
         {
+            if (string.IsNullOrWhiteSpace(currentName)) return (items, 0);
+
             var index = items.FindIndex(1, i => string.Equals(i, currentName, StringComparison.OrdinalIgnoreCase));
             if (index >= 0) return (items, index);
 

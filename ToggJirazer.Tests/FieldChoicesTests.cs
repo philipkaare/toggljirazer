@@ -27,17 +27,28 @@ public class FieldChoicesTests
     }
 
     [Fact]
-    public void Empty_current_selects_listed_default()
+    public void Null_current_selects_listed_default()
     {
-        var (items, index) = FieldChoices.Build(Site, "", "Account");
+        var (items, index) = FieldChoices.Build(Site, null, "Account");
 
         Assert.Equal("Account", items[index]);
     }
 
     [Fact]
-    public void Empty_current_with_missing_default_selects_none()
+    public void Null_current_with_missing_default_selects_none()
     {
-        var (items, index) = FieldChoices.Build(["Summary"], "", "Account");
+        var (items, index) = FieldChoices.Build(["Summary"], null, "Account");
+
+        Assert.Equal(0, index);
+        Assert.Equal("(none)", items[index]);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("  ")]
+    public void Empty_current_means_none_was_chosen(string current)
+    {
+        var (items, index) = FieldChoices.Build(Site, current, "Account");
 
         Assert.Equal(0, index);
         Assert.Equal("(none)", items[index]);
