@@ -1,3 +1,4 @@
+using System.Net.Http;
 using System.Globalization;
 using Avalonia.Headless.XUnit;
 using Avalonia.Threading;
@@ -261,6 +262,57 @@ public class MainWindowTests : IDisposable
         Assert.Contains("[ERROR] Atlassian is having trouble right now — try again in a moment. Details: Internal server error",
             window.LogTextBox.Text);
         Assert.True(store.HasTokens); // the working sign-in is kept
+    }
+
+    private async Task<(MainWindow Window, AtlassianTokenStore Store)> WindowWhoseSignInCheckThrowsAsync(Exception failure)
+    {
+        var store = new AtlassianTokenStore(NewPath("atlassian-auth.json"));
+        await store.StoreTokensAsync(new TokenContainer { TokenType = "Bearer", AccessToken = "a", ObtainedAt = DateTimeOffset.UtcNow }, CancellationToken.None);
+        var tools = new ToggJirazer.Tests.Fakes.FakeJiraTools((_, _) => throw failure);
+        var mcp = new AtlassianMcp(store, _ => throw new InvalidOperationException("Tests never open a browser."), tools);
+        var window = CreateWindow(mcp);
+        window.PopulateUiFromConfig(ValidConfig());
+        return (window, store);
+    }
+
+    [AvaloniaFact]
+    public async Task Run_stops_without_offering_sign_in_when_the_sign_in_check_hits_wrapped_transport_5xx()
+    {
+        var (window, store) = await WindowWhoseSignInCheckThrowsAsync(new ModelContextProtocol.McpException("Transport error",
+            new HttpRequestException("Service unavailable", null, System.Net.HttpStatusCode.ServiceUnavailable)));
+        var prompted = false;
+        var reportRuns = 0;
+        window.ConfirmSignInAgain = () => { prompted = true; return Task.FromResult(true); };
+        window.SignInAgain = _ => throw new InvalidOperationException("Must not sign in again.");
+        window.RunReport = _ => { reportRuns++; return Task.FromResult(true); };
+
+        await window.RunReportFlowAsync(sendEmail: false);
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.False(prompted);
+        Assert.Equal(0, reportRuns);
+        Assert.Contains("[ERROR] Atlassian is having trouble right now — try again in a moment. Details: Transport error",
+            window.LogTextBox.Text);
+        Assert.True(store.HasTokens);
+    }
+
+    [AvaloniaFact]
+    public async Task Sign_in_check_tool_error_without_server_status_offers_sign_in_again()
+    {
+        // e.g. a failed token refresh (invalid_grant) that the SDK reports as a tool error.
+        var (window, _) = await WindowWhoseSignInCheckThrowsAsync(new AtlassianToolException("invalid_grant", statusCode: null));
+        var prompted = false;
+        var reportRuns = 0;
+        window.ConfirmSignInAgain = () => { prompted = true; return Task.FromResult(false); };
+        window.RunReport = _ => { reportRuns++; return Task.FromResult(true); };
+
+        await window.RunReportFlowAsync(sendEmail: false);
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.True(prompted);
+        Assert.Equal(0, reportRuns);
+        Assert.DoesNotContain("having trouble", window.LogTextBox.Text);
+        Assert.Contains("Not signed in to Atlassian", window.LogTextBox.Text);
     }
 
     private static AppConfig ValidConfig() => new()

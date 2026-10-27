@@ -392,18 +392,29 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Checks the Atlassian sign-in before a run and, when it is missing or expired, asks to sign in
-    /// again. Returns false, after logging an error, when the run should stop. An Atlassian tool error during
-    /// the check isn't a missing sign-in: the run stops without offering a sign-in, which would drop working tokens.
+    /// again. Returns false, after logging an error, when the run should stop. Server trouble during the check
+    /// (a 5xx tool or transport error) isn't a missing sign-in: the run stops without offering a sign-in, which
+    /// would drop working tokens. Any other tool error (e.g. a refresh rejected as invalid_grant) offers it.
     /// </summary>
     private async Task<bool> EnsureSignedInAsync(AtlassianMcp mcp, Action onSignInAttempt)
     {
-        var status = await mcp.CheckSignInAsync(CancellationToken.None);
+        SignInStatus status;
+        try
+        {
+            status = await mcp.CheckSignInAsync(CancellationToken.None);
+        }
+        catch (Exception ex) when (AtlassianMcp.ServerStatus(ex) != null)
+        {
+            LogServerTrouble(ex.Message);
+            return false;
+        }
+
         if (status.IsSignedIn)
             return true;
 
-        if (status.ToolError != null)
+        if (status.IsServerTrouble)
         {
-            AppendLog($"[ERROR] {AtlassianMcp.ServerTroubleMessage} Details: {status.ToolError}");
+            LogServerTrouble(status.ToolError);
             return false;
         }
 
@@ -441,6 +452,9 @@ public partial class MainWindow : Window
         AppendLog("Signed in to Atlassian.");
         return true;
     }
+
+    private void LogServerTrouble(string? details) =>
+        AppendLog($"[ERROR] {AtlassianMcp.ServerTroubleMessage} Details: {details}");
 
     private void CancelSignIn_Click(object? sender, RoutedEventArgs e) => _preRunSignInCts?.Cancel();
 

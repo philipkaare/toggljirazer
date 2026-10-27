@@ -14,9 +14,10 @@ public sealed record AtlassianSite(string CloudId, string Url, string Name);
 
 /// <summary>
 /// The result of a sign-in check: the sites when signed in, otherwise <c>null</c>. <see cref="ToolError"/>
-/// is set when the check failed with an Atlassian tool error rather than a missing or rejected sign-in.
+/// is set when the check failed with an Atlassian tool error rather than a missing or rejected sign-in;
+/// <see cref="IsServerTrouble"/> says that error was a 5xx (Atlassian's side failing), not a sign-in problem.
 /// </summary>
-public sealed record SignInStatus(IReadOnlyList<AtlassianSite>? Sites, string? ToolError = null)
+public sealed record SignInStatus(IReadOnlyList<AtlassianSite>? Sites, string? ToolError = null, bool IsServerTrouble = false)
 {
     public static readonly SignInStatus NotSignedIn = new(Sites: null);
 
@@ -128,7 +129,7 @@ public sealed class AtlassianMcp : IAsyncDisposable
     /// <see cref="Exception.InnerException"/> chain is searched, because the SDK wraps transport failures
     /// (e.g. an <see cref="HttpRequestException"/> inside an <see cref="McpException"/>).
     /// </summary>
-    private static int? ServerStatus(Exception ex)
+    internal static int? ServerStatus(Exception ex)
     {
         for (Exception? current = ex; current != null; current = current.InnerException)
         {
@@ -194,7 +195,7 @@ public sealed class AtlassianMcp : IAsyncDisposable
         }
         catch (AtlassianToolException ex)
         {
-            return new SignInStatus(null, ex.Message);
+            return new SignInStatus(null, ex.Message, IsServerTrouble: ServerStatus(ex) != null);
         }
     }
 
