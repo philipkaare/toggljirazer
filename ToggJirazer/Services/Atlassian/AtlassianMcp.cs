@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http;
 using System.Text.Json;
+using ModelContextProtocol;
 using ModelContextProtocol.Authentication;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
@@ -117,9 +118,9 @@ public sealed class AtlassianMcp : IAsyncDisposable
         {
             result = await client.CallToolAsync(toolName, arguments, cancellationToken: ct);
         }
-        catch (Exception ex) when (AsAuthFailure(ex) is { } auth)
+        catch (Exception ex) when (ClassifyFailure(ex) is { } classified)
         {
-            throw auth;
+            throw classified;
         }
 
         var text = string.Concat(result.Content.OfType<TextContentBlock>().Select(b => b.Text));
@@ -198,7 +199,7 @@ public sealed class AtlassianMcp : IAsyncDisposable
         catch (Exception ex)
         {
             await transport.DisposeAsync();
-            if (AsAuthFailure(ex) is { } auth) throw auth;
+            if (ClassifyFailure(ex) is { } classified) throw classified;
             throw;
         }
     }
@@ -212,16 +213,34 @@ public sealed class AtlassianMcp : IAsyncDisposable
         return new AuthorizationResult { Code = code, State = state, Iss = iss };
     }
 
-    /// <summary>Finds an authorization failure anywhere in the exception chain (the SDK may wrap our callback's exception).</summary>
-    private static AtlassianAuthException? AsAuthFailure(Exception ex)
+    /// <summary>
+    /// Maps a failure from the SDK onto the <see cref="IJiraTools"/> exception types, or returns
+    /// <c>null</c> when it should propagate unchanged (cancellation, plain network errors).
+    /// The whole exception chain is searched because the SDK may wrap our callback's exception.
+    /// </summary>
+    internal static Exception? ClassifyFailure(Exception ex)
     {
+        McpException? protocolError = null;
         for (var current = ex; current != null; current = current.InnerException)
         {
-            if (current is AtlassianAuthException auth) return auth;
-            if (current is HttpRequestException { StatusCode: HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden } http)
-                return new AtlassianAuthException("Your Atlassian sign-in is no longer valid.", http);
+            switch (current)
+            {
+                case AtlassianAuthException or AtlassianRateLimitException or AtlassianToolException:
+                    return current;
+                case HttpRequestException { StatusCode: HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden } http:
+                    return new AtlassianAuthException("Your Atlassian sign-in is no longer valid.", http);
+                case HttpRequestException { StatusCode: HttpStatusCode.TooManyRequests }:
+                    return new AtlassianRateLimitException();
+                case OperationCanceledException or HttpRequestException:
+                    return null;
+                case McpException mcp:
+                    protocolError ??= mcp;
+                    break;
+            }
         }
-        return null;
+
+        // JSON-RPC errors (invalid params, unknown tool, ...) and other SDK failures.
+        return protocolError is null ? null : new AtlassianToolException(protocolError.Message, statusCode: null);
     }
 
     private sealed record Connection(McpClient Client, HttpClientTransport Transport) : IAsyncDisposable

@@ -1,4 +1,6 @@
+using System.Net;
 using System.Text.Json;
+using ModelContextProtocol;
 using ToggJirazer.Services.Atlassian;
 using Xunit;
 
@@ -72,5 +74,47 @@ public class AtlassianToolResultTests
         Assert.Equal(
             [new AtlassianSite("cloud-1", "https://abc.atlassian.net", "abc"), new AtlassianSite("cloud-2", "https://def.atlassian.net", "def")],
             sites);
+    }
+
+    [Fact]
+    public void Transport_429_classifies_as_rate_limit()
+    {
+        var ex = new HttpRequestException("Too Many Requests", null, HttpStatusCode.TooManyRequests);
+
+        var classified = Assert.IsType<AtlassianRateLimitException>(AtlassianMcp.ClassifyFailure(ex));
+        Assert.Equal(RateLimitMessage, classified.Message);
+    }
+
+    [Fact]
+    public void Transport_401_classifies_as_auth()
+    {
+        var ex = new McpException("wrapped", new HttpRequestException("Unauthorized", null, HttpStatusCode.Unauthorized));
+
+        Assert.IsType<AtlassianAuthException>(AtlassianMcp.ClassifyFailure(ex));
+    }
+
+    [Fact]
+    public void Wrapped_auth_exception_is_returned_as_is()
+    {
+        var auth = new AtlassianAuthException("Not signed in");
+
+        Assert.Same(auth, AtlassianMcp.ClassifyFailure(new McpException("Failed to handle unauthorized response", auth)));
+    }
+
+    [Fact]
+    public void Protocol_error_classifies_as_tool_exception()
+    {
+        var ex = new McpProtocolException("Unknown tool: nope", McpErrorCode.InvalidParams);
+
+        var classified = Assert.IsType<AtlassianToolException>(AtlassianMcp.ClassifyFailure(ex));
+        Assert.Contains("Unknown tool: nope", classified.Message);
+        Assert.Null(classified.StatusCode);
+    }
+
+    [Fact]
+    public void Cancellation_and_network_errors_propagate()
+    {
+        Assert.Null(AtlassianMcp.ClassifyFailure(new OperationCanceledException()));
+        Assert.Null(AtlassianMcp.ClassifyFailure(new HttpRequestException("No such host is known.")));
     }
 }
