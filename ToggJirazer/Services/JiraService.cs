@@ -40,49 +40,58 @@ public class JiraService
 
     /// <summary>
     /// Finds the Budget and Account custom field IDs by name, once per service instance. Tries the first
-    /// key of each distinct project in <paramref name="candidateKeys"/> (at most
-    /// <see cref="MaxFieldIdLookups"/> <c>getJiraIssue</c> calls), stopping as soon as both are found.
+    /// readable key of each distinct project in <paramref name="candidateKeys"/> (at most
+    /// <see cref="MaxFieldIdLookups"/> <c>getJiraIssue</c> calls in total), stopping as soon as both are found.
     /// Does nothing when there is no candidate key yet.
     /// </summary>
     private async Task ResolveFieldIdsAsync(IEnumerable<string> candidateKeys)
     {
         if (_fieldIdsResolved) return;
 
-        var probes = candidateKeys
+        var keysByProject = candidateKeys
             .Where(k => !string.IsNullOrWhiteSpace(k))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .GroupBy(ProjectOf, StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.First())
-            .Take(MaxFieldIdLookups)
+            .Select(g => g.ToList())
             .ToList();
-        if (probes.Count == 0) return;
+        if (keysByProject.Count == 0) return;
 
         _fieldIdsResolved = true;
-        foreach (var key in probes)
+        var lookups = 0;
+        foreach (var projectKeys in keysByProject)
         {
-            if (_budgetFieldId != null && _accountFieldId != null) break;
-
-            JsonElement root;
-            try
+            // One successful lookup per project; a key that can't be read (deleted, mistyped) moves on
+            // to the next key of the same project.
+            foreach (var key in projectKeys)
             {
-                root = await _tools.CallToolAsync(GetIssueTool, new Dictionary<string, object?>
+                if (_budgetFieldId != null && _accountFieldId != null) break;
+                if (lookups >= MaxFieldIdLookups) break;
+                lookups++;
+
+                JsonElement root;
+                try
                 {
-                    ["cloudId"] = _config.CloudId,
-                    ["issueIdOrKey"] = key,
-                    ["fields"] = new[] { "*all" },
-                    ["expand"] = "names",
-                    ["responseContentFormat"] = ContentFormat,
-                });
-            }
-            catch (AtlassianToolException)
-            {
-                continue; // This key can't be read; try the next project.
-            }
+                    root = await _tools.CallToolAsync(GetIssueTool, new Dictionary<string, object?>
+                    {
+                        ["cloudId"] = _config.CloudId,
+                        ["issueIdOrKey"] = key,
+                        ["fields"] = new[] { "*all" },
+                        ["expand"] = "names",
+                        ["responseContentFormat"] = ContentFormat,
+                    });
+                }
+                catch (AtlassianToolException)
+                {
+                    continue;
+                }
 
-            var names = ReadFieldNames(root);
-            _budgetFieldId ??= names.FirstOrDefault(n =>
-                string.Equals(n.Name, _config.BudgetFieldName, StringComparison.OrdinalIgnoreCase)).Id;
-            _accountFieldId ??= names.FirstOrDefault(n =>
-                string.Equals(n.Name, _config.AccountFieldName, StringComparison.OrdinalIgnoreCase)).Id;
+                var names = ReadFieldNames(root);
+                _budgetFieldId ??= names.FirstOrDefault(n =>
+                    string.Equals(n.Name, _config.BudgetFieldName, StringComparison.OrdinalIgnoreCase)).Id;
+                _accountFieldId ??= names.FirstOrDefault(n =>
+                    string.Equals(n.Name, _config.AccountFieldName, StringComparison.OrdinalIgnoreCase)).Id;
+                break;
+            }
         }
 
         if (_budgetFieldId == null)
@@ -405,7 +414,7 @@ public class JiraService
         {
             await SearchAsync($"key in ({string.Join(", ", keys)})", IssueFields(), fetched.Add);
         }
-        catch (AtlassianToolException ex)
+        catch (AtlassianToolException ex) when (IsKeyRejection(ex))
         {
             var status = ex.StatusCode ?? 400;
             var rejected = KeysNamedIn(ex.Message, keys);
@@ -443,6 +452,15 @@ public class JiraService
             errorStatus[key] = status;
         }
     }
+
+    /// <summary>
+    /// True when Jira rejected the JQL because of the keys in it (400/404, or a "does not exist" /
+    /// permission message). Other tool errors (5xx, non-JSON results, protocol errors) are not key
+    /// problems: they propagate and stop the run instead of being retried key by key.
+    /// </summary>
+    private static bool IsKeyRejection(AtlassianToolException ex) =>
+        ex.StatusCode is 400 or 404
+        || Regex.IsMatch(ex.Message, "does not exist|permission", RegexOptions.IgnoreCase);
 
     /// <summary>The keys of <paramref name="chunk"/> that a Jira error message names in single quotes, e.g. "An issue with key 'ABC-9' does not exist".</summary>
     private static HashSet<string> KeysNamedIn(string message, IEnumerable<string> chunk)

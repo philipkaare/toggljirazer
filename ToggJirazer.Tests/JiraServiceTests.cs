@@ -184,6 +184,56 @@ public class JiraServiceTests
     }
 
     [Fact]
+    public async Task Field_ids_try_next_key_of_same_project_when_probe_fails()
+    {
+        // ABC-1 (e.g. a mistyped key in a Toggl description) doesn't exist; ABC-2 does.
+        var tools = Backed([Issue("ABC-2", budgetOption: "Fondsdrift"), Issue("ABC-3")]);
+        var service = new JiraService(Config, tools);
+
+        var result = await service.GetIssuesBulkAsync(["ABC-1", "ABC-2", "ABC-3"]);
+
+        var getCalls = tools.CallsTo(GetIssue).ToList();
+        Assert.Equal(2, getCalls.Count);
+        Assert.Equal("ABC-1", getCalls[0].Args["issueIdOrKey"]);
+        Assert.Equal("ABC-2", getCalls[1].Args["issueIdOrKey"]);
+        Assert.Contains(BudgetId, Fields(tools.CallsTo(Search).First().Args));
+        Assert.Equal("Fondsdrift", result["ABC-2"]!.Budget);
+    }
+
+    [Theory]
+    [InlineData(500, "Internal server error")]
+    [InlineData(null, "Atlassian returned a result that is not JSON: <html>")]
+    public async Task Bulk_non_key_tool_error_propagates_without_retries(int? status, string message)
+    {
+        var tools = new FakeJiraTools((tool, args) =>
+        {
+            if (tool == GetIssue) return NamesResponse(Issue("ABC-1"), AllNames);
+            throw new AtlassianToolException(message, status);
+        });
+        var service = new JiraService(Config, tools);
+
+        var keys = Enumerable.Range(1, 100).Select(n => $"ABC-{n}").ToList();
+        var ex = await Assert.ThrowsAsync<AtlassianToolException>(() => service.GetIssuesBulkAsync(keys));
+
+        Assert.Equal(status, ex.StatusCode);
+        Assert.Single(tools.CallsTo(Search));
+    }
+
+    [Fact]
+    public async Task Bulk_rate_limit_from_search_propagates()
+    {
+        var tools = new FakeJiraTools((tool, args) =>
+        {
+            if (tool == GetIssue) return NamesResponse(Issue("ABC-1"), AllNames);
+            throw new AtlassianRateLimitException();
+        });
+        var service = new JiraService(Config, tools);
+
+        await Assert.ThrowsAsync<AtlassianRateLimitException>(() => service.GetIssuesBulkAsync(["ABC-1", "ABC-2"]));
+        Assert.Single(tools.CallsTo(Search));
+    }
+
+    [Fact]
     public async Task Bulk_uses_key_in_jql_chunks_of_100()
     {
         var issues = Enumerable.Range(1, 150).Select(n => Issue($"ABC-{n}")).ToList();
@@ -234,6 +284,8 @@ public class JiraServiceTests
 
         var result = await service.GetIssuesBulkAsync(keys);
 
+        // 10 -> 5 + 5 -> 2 + 3 -> 1 + 2: seven searches; anything near one per key would be a regression.
+        Assert.True(tools.CallsTo(Search).Count() <= 9, $"Expected at most 9 searches, got {tools.CallsTo(Search).Count()}");
         Assert.Null(result["ABC-3"]);
         Assert.All(keys.Where(k => k != "ABC-3"), k => Assert.NotNull(result[k]));
     }
