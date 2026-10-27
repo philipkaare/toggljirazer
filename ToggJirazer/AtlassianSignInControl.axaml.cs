@@ -41,6 +41,12 @@ public partial class AtlassianSignInControl : UserControl
     /// <summary>Raised after the user signs in or out from this control.</summary>
     public event EventHandler? SignInChanged;
 
+    /// <summary>Raised when an interactive sign-in starts waiting for the browser, and again when it ends.</summary>
+    public event EventHandler? SigningInChanged;
+
+    /// <summary>True while an interactive sign-in waits for the user to finish in the browser.</summary>
+    public bool IsSigningIn => _signInCts != null;
+
     /// <summary>Whether the last status check (or sign-in) found a working sign-in.</summary>
     public bool IsSignedIn => _signedIn;
 
@@ -179,13 +185,14 @@ public partial class AtlassianSignInControl : UserControl
     {
         using var cts = new CancellationTokenSource();
         _signInCts = cts;
+        SigningInChanged?.Invoke(this, EventArgs.Empty);
         _refreshGeneration++; // a status check still in flight must not overwrite the sign-in state
         SignInButton.Content = CancelSignInText;
         StatusText.Text = WaitingText;
         try
         {
             await signIn(cts.Token, uri => RunOnUiThread(() => ShowAuthorizationUrl(uri)));
-            _signInCts = null;
+            EndSigningIn();
             HideAuthorizationUrl();
             SignInButton.IsEnabled = false; // nothing to cancel any more while the status loads
             await RefreshStatusAsync();
@@ -197,11 +204,18 @@ public partial class AtlassianSignInControl : UserControl
         }
         finally
         {
-            _signInCts = null;
+            EndSigningIn();
             HideAuthorizationUrl();
             SignInButton.IsEnabled = true;
             if (!_signedIn) SignInButton.Content = SignInText;
         }
+    }
+
+    private void EndSigningIn()
+    {
+        if (_signInCts == null) return;
+        _signInCts = null;
+        SigningInChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private async Task SignOutAsync(AtlassianMcp mcp)

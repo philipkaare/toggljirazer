@@ -261,6 +261,43 @@ public class SetupWizardWindowTests : IDisposable
     }
 
     [AvaloniaFact]
+    public async Task Navigation_and_cancel_disabled_while_atlassian_sign_in_waits()
+    {
+        var wizard = CreateWizard(CompleteConfig());
+        wizard.JiraSignIn.LoadSitesIfSignedIn = () => Task.FromResult<IReadOnlyList<AtlassianSite>?>(null);
+        var cancelled = new TaskCompletionSource();
+        wizard.JiraSignIn.SignIn = async (ct, _) =>
+        {
+            try { await Task.Delay(Timeout.Infinite, ct); }
+            catch (OperationCanceledException) { cancelled.SetResult(); throw; }
+        };
+        wizard.Show();
+        await AdvanceToAsync(wizard, SetupStep.JiraSignIn);
+        Assert.True(wizard.BackButton.IsEnabled);
+        Assert.True(wizard.CancelButton.IsEnabled);
+
+        wizard.JiraSignIn.SignInButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal("Cancel sign-in", wizard.JiraSignIn.SignInButton.Content);
+        Assert.False(wizard.BackButton.IsEnabled);
+        Assert.False(wizard.NextButton.IsEnabled);
+        Assert.False(wizard.CancelButton.IsEnabled);
+        wizard.BackButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        Dispatcher.UIThread.RunJobs();
+        Assert.Equal(SetupStep.JiraSignIn, wizard.State.Step);
+
+        // Cancelling the sign-in gives navigation back.
+        wizard.JiraSignIn.SignInButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await RunUntilAsync(() => wizard.CancelButton.IsEnabled);
+
+        Assert.True(wizard.BackButton.IsEnabled);
+        Assert.True(wizard.CancelButton.IsEnabled);
+        Assert.False(wizard.NextButton.IsEnabled); // still not signed in
+    }
+
+    [AvaloniaFact]
     public async Task Toggl_result_arriving_after_step_change_is_dropped()
     {
         var held = new HeldHttpHandler(TwoAccountApi);

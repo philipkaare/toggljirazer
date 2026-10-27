@@ -71,6 +71,8 @@ public partial class SetupWizardWindow : Window
         if (mcp != null) JiraSignIn.Initialize(mcp);
         JiraSignIn.SetSelection(Draft.Jira.CloudId, Draft.Jira.SiteUrl);
         JiraSignIn.SignInChanged += (_, _) => SyncJiraFromControl();
+        // While the Atlassian sign-in waits for the browser, the wizard can't be left or closed with its buttons.
+        JiraSignIn.SigningInChanged += (_, _) => UpdateButtons();
         JiraSignIn.SiteComboBox.SelectionChanged += (_, _) => SyncJiraFromControl();
         TogglPassword.AddHandler(KeyDownEvent, TogglPassword_KeyDown, RoutingStrategies.Tunnel);
         TogglTokenBox.AddHandler(KeyDownEvent, TogglTokenBox_KeyDown, RoutingStrategies.Tunnel);
@@ -137,28 +139,35 @@ public partial class SetupWizardWindow : Window
         return Task.CompletedTask;
     }
 
+    // A Toggl check or an Atlassian sign-in is waiting for an answer: navigation waits too.
+    private bool Busy => _togglBusy || JiraSignIn.IsSigningIn;
+
     private void UpdateButtons()
     {
         var done = State.Step == SetupStep.Done;
-        BackButton.IsEnabled = State.CanGoBack && !_togglBusy;
+        BackButton.IsEnabled = State.CanGoBack && !Busy;
         NextButton.IsVisible = !done;
-        NextButton.IsEnabled = State.CanGoNext && !_togglBusy;
+        NextButton.IsEnabled = State.CanGoNext && !Busy;
         FinishButton.IsVisible = done;
+        CancelButton.IsEnabled = !JiraSignIn.IsSigningIn;
     }
 
     private async void Next_Click(object? sender, RoutedEventArgs e)
     {
-        if (State.CanGoNext && !_togglBusy) await NextAsync();
+        if (State.CanGoNext && !Busy) await NextAsync();
     }
 
     private async void Back_Click(object? sender, RoutedEventArgs e)
     {
-        if (!_togglBusy) await BackAsync();
+        if (!Busy) await BackAsync();
     }
 
     private void Finish_Click(object? sender, RoutedEventArgs e) => Close(Draft);
 
-    private void Cancel_Click(object? sender, RoutedEventArgs e) => Close(null);
+    private void Cancel_Click(object? sender, RoutedEventArgs e)
+    {
+        if (!JiraSignIn.IsSigningIn) Close(null);
+    }
 
     // -------------------------------------------------------------------------
     // Toggl sign-in
