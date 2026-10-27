@@ -1,4 +1,6 @@
+using System.Text.Json;
 using Avalonia.Headless.XUnit;
+using ToggJirazer.Tests.Fakes;
 using ModelContextProtocol.Authentication;
 using ToggJirazer.Services.Atlassian;
 using Xunit;
@@ -137,6 +139,24 @@ public class AtlassianSignInControlTests : IDisposable
 
         Assert.Equal("Sign-in failed: boom", control.StatusText.Text);
         Assert.Equal("Sign in with Atlassian", control.SignInButton.Content);
+    }
+
+    [AvaloniaFact]
+    public async Task Status_check_loads_sites_with_a_single_sites_call()
+    {
+        var store = new AtlassianTokenStore(AuthPath);
+        await store.StoreTokensAsync(new TokenContainer { TokenType = "Bearer", AccessToken = "a", ObtainedAt = DateTimeOffset.UtcNow }, CancellationToken.None);
+        var tools = new FakeJiraTools((tool, _) => tool == "getAccessibleAtlassianResources"
+            ? JsonSerializer.SerializeToElement(new[] { new { id = "c1", url = "https://abc.atlassian.net", name = "ABC" } })
+            : throw new InvalidOperationException($"Unexpected tool call: {tool}"));
+        await using var mcp = new AtlassianMcp(store, _ => throw new InvalidOperationException("no browser"), tools);
+        var control = new AtlassianSignInControl();
+        control.Initialize(mcp);
+
+        await control.RefreshStatusAsync();
+
+        Assert.Single(tools.CallsTo("getAccessibleAtlassianResources"));
+        Assert.Equal("Signed in (ABC)", control.StatusText.Text);
     }
 
     [Fact]

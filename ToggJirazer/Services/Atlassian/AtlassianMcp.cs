@@ -13,6 +13,17 @@ namespace ToggJirazer.Services.Atlassian;
 public sealed record AtlassianSite(string CloudId, string Url, string Name);
 
 /// <summary>
+/// The result of a sign-in check: the sites when signed in, otherwise <c>null</c>. <see cref="ToolError"/>
+/// is set when the check failed with an Atlassian tool error rather than a missing or rejected sign-in.
+/// </summary>
+public sealed record SignInStatus(IReadOnlyList<AtlassianSite>? Sites, string? ToolError = null)
+{
+    public static readonly SignInStatus NotSignedIn = new(Sites: null);
+
+    public bool IsSignedIn => Sites != null;
+}
+
+/// <summary>
 /// Connection to Atlassian's remote MCP server with OAuth. A browser opens only in
 /// <see cref="SignInAsync"/>; every other path uses a non-interactive client that fails fast with
 /// <see cref="AtlassianAuthException"/> when the stored sign-in can't be used or refreshed.
@@ -31,10 +42,16 @@ public sealed class AtlassianMcp : IAsyncDisposable
     private Connection? _connection; // the non-interactive client, created on first use
 
     public AtlassianMcp(AtlassianTokenStore store, Action<Uri>? openBrowser = null)
+        : this(store, openBrowser, tools: null)
+    {
+    }
+
+    /// <summary>Test seam: <paramref name="tools"/> replaces the live non-interactive tools.</summary>
+    internal AtlassianMcp(AtlassianTokenStore store, Action<Uri>? openBrowser, IJiraTools? tools)
     {
         _store = store;
         _openBrowser = openBrowser ?? (uri => PlatformOpener.Open(uri.AbsoluteUri));
-        Tools = new McpJiraTools(this);
+        Tools = tools ?? new McpJiraTools(this);
     }
 
     /// <summary>Whether a sign-in is stored on disk. Does not check that it still works and makes no network call.</summary>
@@ -121,33 +138,46 @@ public sealed class AtlassianMcp : IAsyncDisposable
         ParseSites(await Tools.CallToolAsync(SitesTool, NoArguments, ct));
 
     /// <summary>Whether the stored sign-in works (refreshing it quietly when it can). Never opens a browser.</summary>
-    public async Task<bool> IsSignedInAsync(CancellationToken ct)
+    public async Task<bool> IsSignedInAsync(CancellationToken ct) => (await CheckSignInAsync(ct)).IsSignedIn;
+
+    /// <summary>
+    /// The user's sites when the stored sign-in works, otherwise <c>null</c> — one sites call, same
+    /// semantics as <see cref="IsSignedInAsync"/>. Never opens a browser.
+    /// </summary>
+    public async Task<IReadOnlyList<AtlassianSite>?> TryGetSitesAsync(CancellationToken ct) =>
+        (await CheckSignInAsync(ct)).Sites;
+
+    /// <summary>
+    /// Checks the stored sign-in with one sites call (refreshing it quietly when it can). Never opens a browser.
+    /// Network errors propagate.
+    /// </summary>
+    public async Task<SignInStatus> CheckSignInAsync(CancellationToken ct)
     {
-        if (!_store.HasTokens) return false;
+        if (!_store.HasTokens) return SignInStatus.NotSignedIn;
         return await ProbeSignInAsync(() => GetSitesAsync(ct), ResetConnectionAsync);
     }
 
     /// <summary>
     /// Runs the sites call and reports whether it worked. A failed token refresh (e.g. <c>invalid_grant</c>)
     /// may surface as <see cref="AtlassianToolException"/> rather than <see cref="AtlassianAuthException"/>,
-    /// so both count as "not signed in". Only an auth failure drops the cached connection: a tool error
-    /// says nothing certain about the connection, which a running report may be using. Network errors propagate.
+    /// so both count as "not signed in"; a tool error's message is kept as <see cref="SignInStatus.ToolError"/>.
+    /// Only an auth failure drops the cached connection: a tool error says nothing certain about the
+    /// connection, which a running report may be using. Network errors propagate.
     /// </summary>
-    internal static async Task<bool> ProbeSignInAsync(Func<Task> getSites, Func<Task> resetConnection)
+    internal static async Task<SignInStatus> ProbeSignInAsync(Func<Task<IReadOnlyList<AtlassianSite>>> getSites, Func<Task> resetConnection)
     {
         try
         {
-            await getSites();
-            return true;
+            return new SignInStatus(await getSites());
         }
         catch (AtlassianAuthException)
         {
             await resetConnection();
-            return false;
+            return SignInStatus.NotSignedIn;
         }
-        catch (AtlassianToolException)
+        catch (AtlassianToolException ex)
         {
-            return false;
+            return new SignInStatus(null, ex.Message);
         }
     }
 

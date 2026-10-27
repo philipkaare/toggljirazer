@@ -82,11 +82,8 @@ public partial class AtlassianSignInControl : UserControl
         }
     }
 
-    private async Task<IReadOnlyList<AtlassianSite>?> LoadSitesFromMcpAsync()
-    {
-        if (_mcp == null || !await _mcp.IsSignedInAsync(CancellationToken.None)) return null;
-        return await _mcp.GetSitesAsync(CancellationToken.None);
-    }
+    private Task<IReadOnlyList<AtlassianSite>?> LoadSitesFromMcpAsync() =>
+        _mcp?.TryGetSitesAsync(CancellationToken.None) ?? Task.FromResult<IReadOnlyList<AtlassianSite>?>(null);
 
     /// <summary>
     /// Fills the Site dropdown and re-applies the configured selection. When the configured site isn't
