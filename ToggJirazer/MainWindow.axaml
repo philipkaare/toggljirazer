@@ -1,5 +1,6 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:ToggJirazer"
         x:Class="ToggJirazer.MainWindow"
         Title="ToggJirazer" Height="720" Width="760"
         MinHeight="600" MinWidth="640"
@@ -52,16 +53,7 @@
 
             <!-- Jira settings -->
             <TabItem Header="Jira">
-                <Grid Margin="10,8" ColumnDefinitions="160,*" RowDefinitions="Auto,Auto,Auto">
-                    <Label Grid.Row="0" Grid.Column="0" Content="Base URL:"/>
-                    <TextBox Grid.Row="0" Grid.Column="1" x:Name="JiraBaseUrl"/>
-
-                    <Label Grid.Row="1" Grid.Column="0" Content="User Email:"/>
-                    <TextBox Grid.Row="1" Grid.Column="1" x:Name="JiraUserEmail"/>
-
-                    <Label Grid.Row="2" Grid.Column="0" Content="API Token:"/>
-                    <TextBox Grid.Row="2" Grid.Column="1" x:Name="JiraApiToken" PasswordChar="●"/>
-                </Grid>
+                <local:AtlassianSignInControl x:Name="JiraSignIn" Margin="10,8"/>
             </TabItem>
 
             <!-- Report settings -->

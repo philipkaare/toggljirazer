@@ -2,6 +2,7 @@ using System.IO;
 using Avalonia;
 using ToggJirazer.Cli;
 using ToggJirazer.Services;
+using ToggJirazer.Services.Atlassian;
 
 namespace ToggJirazer;
 
@@ -34,13 +35,24 @@ public static class Program
                 return 0;
 
             case LaunchMode.Gui:
+            {
+                await using var mcp = CreateAtlassianMcp();
                 App.SettingsPath = SettingsPath;
+                App.Mcp = mcp;
                 return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+            }
 
             default:
-                return await HeadlessRunner.RunAsync(settings.Load());
+            {
+                await using var mcp = CreateAtlassianMcp();
+                return await HeadlessRunner.RunAsync(settings.Load(), mcp);
+            }
         }
     }
+
+    private static AtlassianMcp CreateAtlassianMcp() => new(
+        new AtlassianTokenStore(SettingsLocator.AtlassianAuthPath(SettingsPath)),
+        uri => PlatformOpener.Open(uri.AbsoluteUri));
 
     public static AppBuilder BuildAvaloniaApp() =>
         AppBuilder.Configure<App>().UsePlatformDetect().WithInterFont().LogToTrace();

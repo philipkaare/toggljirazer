@@ -19,12 +19,8 @@ public static class ConfigValidator
             return "Toggl Workspace ID is required.";
         if (config.Toggl.ProjectId == 0)
             return "Toggl Project ID is required.";
-        if (string.IsNullOrWhiteSpace(config.Jira.BaseUrl))
-            return "Jira Base URL is required.";
-        if (string.IsNullOrWhiteSpace(config.Jira.UserEmail))
-            return "Jira User Email is required.";
-        if (string.IsNullOrWhiteSpace(config.Jira.ApiToken))
-            return "Jira API Token is required.";
+        if (string.IsNullOrWhiteSpace(config.Jira.CloudId))
+            return "Pick your Atlassian site (Jira tab).";
         if (string.IsNullOrWhiteSpace(config.Report.OutputFile))
             return "Output File path is required.";
         return null;

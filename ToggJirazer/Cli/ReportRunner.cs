@@ -1,4 +1,5 @@
 using ToggJirazer.Models;
+using ToggJirazer.Services.Atlassian;
 
 namespace ToggJirazer.Cli;
 
@@ -29,11 +30,11 @@ public static class ReportRunner
         return (startDate, today);
     }
 
-    public static async Task<bool> RunAsync(AppConfig config, Action<string> log)
+    public static async Task<bool> RunAsync(AppConfig config, IJiraTools jiraTools, Action<string> log)
     {
         var (startDate, endDate) = ResolvePeriod(config.Report, DateTime.Today, log);
 
-        var reportWritten = await Services.ReportRunner.RunAsync(config, startDate, endDate,
+        var reportWritten = await Services.ReportRunner.RunAsync(config, jiraTools, startDate, endDate,
             cacheEnabled: false, cacheWritePermissionPrompt: _ => false);
         log("Done.");
         return reportWritten;

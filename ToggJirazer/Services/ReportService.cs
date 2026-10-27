@@ -350,11 +350,13 @@ public class ReportService
 
         Console.WriteLine($"Building version report for {fixVersionSet.Count} fix version(s).");
 
+        var issuesByVersion = await _jiraService.GetIssuesByFixVersionsAsync(fixVersionSet);
+
         var versionRows = new List<VersionReportRow>();
         foreach (var version in fixVersionSet)
         {
             Console.WriteLine($"  Fetching Jira issues for fix version: {version}");
-            var versionIssues = await _jiraService.GetIssuesByFixVersionAsync(version);
+            var versionIssues = issuesByVersion.TryGetValue(version, out var issues) ? issues : new List<JiraIssue>();
             var estimateSum = versionIssues.Sum(i => i.Estimate ?? 0.0);
 
             periodHoursByVersion.TryGetValue(version, out var periodHours);

@@ -16,7 +16,7 @@ public class SettingsServiceTests
             var original = new AppConfig
             {
                 Toggl = new TogglConfig { ApiToken = "tok", OrganizationId = 1, WorkspaceId = 2, ProjectId = 3 },
-                Jira = new JiraConfig { BaseUrl = "https://x.atlassian.net", UserEmail = "a@b.c", ApiToken = "jt", BudgetFieldName = "MyBudget", AccountFieldName = "MyAccount" },
+                Jira = new JiraConfig { CloudId = "cid-1", SiteUrl = "https://x.atlassian.net", BudgetFieldName = "MyBudget", AccountFieldName = "MyAccount" },
                 Report = new ReportConfig { StartDate = "2026-01-01", EndDate = "2026-06-30", OutputFile = "r.xlsx", Format = "xlsx" }
             };
 
@@ -25,11 +25,54 @@ public class SettingsServiceTests
 
             Assert.Equal(original.Toggl.ApiToken, loaded.Toggl.ApiToken);
             Assert.Equal(original.Toggl.WorkspaceId, loaded.Toggl.WorkspaceId);
-            Assert.Equal(original.Jira.BaseUrl, loaded.Jira.BaseUrl);
+            Assert.Equal(original.Jira.CloudId, loaded.Jira.CloudId);
+            Assert.Equal(original.Jira.SiteUrl, loaded.Jira.SiteUrl);
             Assert.Equal(original.Jira.BudgetFieldName, loaded.Jira.BudgetFieldName);
             Assert.Equal(original.Jira.AccountFieldName, loaded.Jira.AccountFieldName);
             Assert.Equal(original.Report.OutputFile, loaded.Report.OutputFile);
             Assert.Equal(original.Report.StartDate, loaded.Report.StartDate);
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Legacy_jira_baseurl_migrates_to_siteurl()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"tj-{Guid.NewGuid():N}.json");
+        try
+        {
+            File.WriteAllText(path, """{"Jira":{"BaseUrl":"https://abc.atlassian.net","UserEmail":"a@b.c","ApiToken":"jt"}}""");
+
+            var loaded = new SettingsService(path).Load();
+
+            Assert.Equal("https://abc.atlassian.net", loaded.Jira.SiteUrl);
+            Assert.Equal("", loaded.Jira.CloudId);
+        }
+        finally
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    [Fact]
+    public void Save_drops_legacy_jira_credentials()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"tj-{Guid.NewGuid():N}.json");
+        try
+        {
+            File.WriteAllText(path, """{"Jira":{"BaseUrl":"https://abc.atlassian.net","UserEmail":"a@b.c","ApiToken":"jt","BudgetFieldName":"MyBudget"}}""");
+            var service = new SettingsService(path);
+
+            service.Save(service.Load());
+
+            var jira = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(path))!["Jira"]!.AsObject();
+            Assert.False(jira.ContainsKey("BaseUrl"));
+            Assert.False(jira.ContainsKey("UserEmail"));
+            Assert.False(jira.ContainsKey("ApiToken"));
+            Assert.Equal("MyBudget", jira["BudgetFieldName"]!.GetValue<string>());
         }
         finally
         {

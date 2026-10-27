@@ -27,6 +27,12 @@ public class SettingsService
 
         try
         {
+            var cloudId = node["Jira"]?["CloudId"]?.GetValue<string>() ?? string.Empty;
+            var siteUrl = node["Jira"]?["SiteUrl"]?.GetValue<string>() ?? string.Empty;
+            // Settings from before the Atlassian sign-in: keep the old base URL as the site to show.
+            if (cloudId.Length == 0 && siteUrl.Length == 0)
+                siteUrl = node["Jira"]?["BaseUrl"]?.GetValue<string>() ?? string.Empty;
+
             return new AppConfig
             {
                 Toggl = new TogglConfig
@@ -38,9 +44,8 @@ public class SettingsService
                 },
                 Jira = new JiraConfig
                 {
-                    BaseUrl = node["Jira"]?["BaseUrl"]?.GetValue<string>() ?? string.Empty,
-                    UserEmail = node["Jira"]?["UserEmail"]?.GetValue<string>() ?? string.Empty,
-                    ApiToken = node["Jira"]?["ApiToken"]?.GetValue<string>() ?? string.Empty,
+                    CloudId = cloudId,
+                    SiteUrl = siteUrl,
                     BudgetFieldName = node["Jira"]?["BudgetFieldName"]?.GetValue<string>() ?? "Budget",
                     AccountFieldName = node["Jira"]?["AccountFieldName"]?.GetValue<string>() ?? "Account"
                 },
@@ -136,9 +141,8 @@ public class SettingsService
             },
             ["Jira"] = new JsonObject
             {
-                ["BaseUrl"] = config.Jira.BaseUrl,
-                ["UserEmail"] = config.Jira.UserEmail,
-                ["ApiToken"] = config.Jira.ApiToken,
+                ["CloudId"] = config.Jira.CloudId,
+                ["SiteUrl"] = config.Jira.SiteUrl,
                 ["BudgetFieldName"] = config.Jira.BudgetFieldName,
                 ["AccountFieldName"] = config.Jira.AccountFieldName
             },

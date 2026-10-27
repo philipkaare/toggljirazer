@@ -115,19 +115,26 @@ public class HttpResponseCache
             ContentBase64 = Convert.ToBase64String(bytes)
         };
         var json = JsonSerializer.Serialize(entry, JsonOptions);
-        var path = PathForKey(key);
+        WriteEntryFile(_directory, PathForKey(key), json, _onWritePermissionError);
+    }
 
+    /// <summary>
+    /// Writes one cache entry file. If writing fails because of a permission problem the callback
+    /// decides whether to retry or give up; other failures are logged and never break report generation.
+    /// </summary>
+    internal static void WriteEntryFile(string directory, string path, string content, Func<Exception, bool>? onWritePermissionError)
+    {
         while (true)
         {
             try
             {
-                Directory.CreateDirectory(_directory);
-                File.WriteAllText(path, json);
+                Directory.CreateDirectory(directory);
+                File.WriteAllText(path, content);
                 return;
             }
             catch (Exception ex) when (IsPermissionProblem(ex))
             {
-                if (_onWritePermissionError != null && _onWritePermissionError(ex))
+                if (onWritePermissionError != null && onWritePermissionError(ex))
                     continue; // user chose "Try again"
                 Console.Error.WriteLine($"  [cache] Skipped saving (permission denied): {ex.Message}");
                 return;

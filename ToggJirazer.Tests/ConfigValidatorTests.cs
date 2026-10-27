@@ -9,7 +9,7 @@ public class ConfigValidatorTests
     private static AppConfig Valid() => new()
     {
         Toggl = new TogglConfig { ApiToken = "t", OrganizationId = 1, WorkspaceId = 2, ProjectId = 3 },
-        Jira = new JiraConfig { BaseUrl = "https://x.atlassian.net", UserEmail = "a@b.c", ApiToken = "j" },
+        Jira = new JiraConfig { CloudId = "cid-1", SiteUrl = "https://x.atlassian.net" },
         Report = new ReportConfig { OutputFile = "r.xlsx", Format = "xlsx" }
     };
 
@@ -34,12 +34,17 @@ public class ConfigValidatorTests
     }
 
     [Fact]
-    public void Missing_jira_base_url_is_reported()
+    public void Validator_requires_cloud_id()
     {
         var c = Valid();
-        c.Jira.BaseUrl = "";
-        Assert.Contains("Jira Base URL", ConfigValidator.Validate(c));
+        c.Jira.CloudId = "";
+        Assert.Equal("Pick your Atlassian site (Jira tab).", ConfigValidator.Validate(c));
+        Assert.Equal("Pick your Atlassian site (Jira tab).", ToggJirazer.Services.ReportRunner.ValidateConfig(c));
     }
+
+    [Fact]
+    public void Gui_validator_accepts_valid_config()
+        => Assert.Null(ToggJirazer.Services.ReportRunner.ValidateConfig(Valid()));
 
     [Fact]
     public void Missing_output_file_is_reported()

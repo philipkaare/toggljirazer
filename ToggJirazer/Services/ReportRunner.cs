@@ -1,5 +1,6 @@
 using System.IO;
 using ToggJirazer.Models;
+using ToggJirazer.Services.Atlassian;
 
 namespace ToggJirazer.Services;
 
@@ -20,12 +21,8 @@ public static class ReportRunner
             return "Toggl Workspace ID is required (Toggl tab).";
         if (config.Toggl.ProjectId == 0)
             return "Toggl Project ID is required (Toggl tab).";
-        if (string.IsNullOrWhiteSpace(config.Jira.BaseUrl))
-            return "Jira Base URL is required (Jira tab).";
-        if (string.IsNullOrWhiteSpace(config.Jira.UserEmail))
-            return "Jira User Email is required (Jira tab).";
-        if (string.IsNullOrWhiteSpace(config.Jira.ApiToken))
-            return "Jira API Token is required (Jira tab).";
+        if (string.IsNullOrWhiteSpace(config.Jira.CloudId))
+            return "Pick your Atlassian site (Jira tab).";
         if (string.IsNullOrWhiteSpace(config.Report.OutputFile))
             return "Output File path is required (Report tab).";
         return null;
@@ -61,6 +58,7 @@ public static class ReportRunner
     /// </summary>
     public static async Task<bool> RunAsync(
         AppConfig appConfig,
+        IJiraTools jiraTools,
         DateTime startDate,
         DateTime endDate,
         bool cacheEnabled,
@@ -68,14 +66,16 @@ public static class ReportRunner
     {
         Console.WriteLine($"Report period: {startDate:yyyy-MM-dd} to {endDate:yyyy-MM-dd}");
         Console.WriteLine($"Toggl workspace: {appConfig.Toggl.WorkspaceId}, project: {appConfig.Toggl.ProjectId}");
-        Console.WriteLine($"Jira base URL: {appConfig.Jira.BaseUrl}");
+        Console.WriteLine($"Jira site: {appConfig.Jira.SiteUrl}");
 
-        // Set up the request cache (shared by both services). Disabled when the user unchecks it.
+        // Set up the request caches (Toggl HTTP responses, Jira tool results). Disabled when the user unchecks it.
         HttpResponseCache? cache = null;
         if (cacheEnabled)
         {
             var cacheDir = Path.Combine(AppContext.BaseDirectory, "cache");
             cache = new HttpResponseCache(cacheDir, TimeSpan.FromDays(1), cacheWritePermissionPrompt);
+            jiraTools = new ToolResultCache(Path.Combine(cacheDir, "jira"), TimeSpan.FromDays(1), cacheWritePermissionPrompt)
+                .Wrap(jiraTools);
             Console.WriteLine($"Request cache enabled (folder: {cacheDir}, expires after 1 day).");
         }
         else
@@ -102,7 +102,7 @@ public static class ReportRunner
         Console.WriteLine();
 
         // Build the report
-        using var jiraService = new JiraService(appConfig.Jira, cache);
+        var jiraService = new JiraService(appConfig.Jira, jiraTools);
         var reportService = new ReportService(jiraService);
         var (reportSheets, versionRows, leverances, categoryConsumedHours, weeklyCategoryConsumedHours, monthlyCategoryConsumedHours, noBudgetRows) =
             await reportService.BuildReportAsync(entries, allEntries);

@@ -10,18 +10,29 @@ public static class SettingsLocator
 {
     private const string FileName = "appsettings.json";
     private const string PlaceholderToken = "your-toggl-api-token";
+    private const string SettingsDirVariable = "TOGGJIRAZER_SETTINGS_DIR";
 
     /// <summary>
     /// %APPDATA%\ToggJirazer\appsettings.json on Windows,
     /// ~/Library/Application Support/ToggJirazer/appsettings.json on macOS.
+    /// The TOGGJIRAZER_SETTINGS_DIR environment variable overrides the folder (a test seam,
+    /// so the app can be launched against throwaway settings).
     /// </summary>
     public static string UserSettingsPath()
     {
+        var overrideDir = Environment.GetEnvironmentVariable(SettingsDirVariable);
+        if (!string.IsNullOrEmpty(overrideDir))
+            return Path.Combine(overrideDir, FileName);
+
         var root = OperatingSystem.IsMacOS()
             ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Library", "Application Support")
             : Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
         return Path.Combine(root, "ToggJirazer", FileName);
     }
+
+    /// <summary>The Atlassian sign-in file, kept next to the settings file.</summary>
+    public static string AtlassianAuthPath(string settingsPath) =>
+        Path.Combine(Path.GetDirectoryName(settingsPath) ?? string.Empty, "atlassian-auth.json");
 
     /// <summary>
     /// Settings files used before settings moved per-user: the working directory, the

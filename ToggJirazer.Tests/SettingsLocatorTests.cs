@@ -127,4 +127,29 @@ public class SettingsLocatorTests : IDisposable
         Assert.Equal("appsettings.json", Path.GetFileName(path));
         Assert.Equal("ToggJirazer", Path.GetFileName(Path.GetDirectoryName(path)));
     }
+
+    [Fact]
+    public void Settings_dir_env_override()
+    {
+        var dir = Path.Combine(_root, "override");
+        try
+        {
+            Environment.SetEnvironmentVariable("TOGGJIRAZER_SETTINGS_DIR", dir);
+            Assert.Equal(Path.Combine(dir, "appsettings.json"), SettingsLocator.UserSettingsPath());
+
+            Environment.SetEnvironmentVariable("TOGGJIRAZER_SETTINGS_DIR", "");
+            Assert.Equal("ToggJirazer", Path.GetFileName(Path.GetDirectoryName(SettingsLocator.UserSettingsPath())));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("TOGGJIRAZER_SETTINGS_DIR", null);
+        }
+    }
+
+    [Fact]
+    public void AtlassianAuthPath_sits_next_to_settings()
+    {
+        var settings = Path.Combine(_root, "user", "appsettings.json");
+        Assert.Equal(Path.Combine(_root, "user", "atlassian-auth.json"), SettingsLocator.AtlassianAuthPath(settings));
+    }
 }
