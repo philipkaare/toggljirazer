@@ -87,7 +87,7 @@ public class MainWindowTests
         var window = CreateWindow(NotSignedInMcp());
         window.PopulateUiFromConfig(ValidConfig());
         window.ConfirmSignInAgain = () => Task.FromResult(true);
-        window.SignInAgain = () => Task.CompletedTask;
+        window.SignInAgain = _ => Task.CompletedTask;
         bool? enabledDuringRun = null;
         window.RunReport = _ => { enabledDuringRun = window.JiraSignIn.IsEnabled; return Task.FromResult(false); };
 
@@ -104,7 +104,7 @@ public class MainWindowTests
         var window = CreateWindow(NotSignedInMcp());
         window.PopulateUiFromConfig(ValidConfig());
         window.ConfirmSignInAgain = () => Task.FromResult(true);
-        window.SignInAgain = () => { window.JiraSignIn.StatusText.Text = "signed in by test"; return Task.CompletedTask; };
+        window.SignInAgain = _ => { window.JiraSignIn.StatusText.Text = "signed in by test"; return Task.CompletedTask; };
         string? statusDuringRun = null;
         window.RunReport = _ => { statusDuringRun = window.JiraSignIn.StatusText.Text; return Task.FromResult(false); };
 
@@ -114,6 +114,40 @@ public class MainWindowTests
         Assert.Equal("signed in by test", statusDuringRun);
         // The refresh after the run finds no stored tokens.
         Assert.Equal("Not signed in", window.JiraSignIn.StatusText.Text);
+    }
+
+    [AvaloniaFact]
+    public async Task Pre_run_sign_in_can_be_cancelled_from_the_log_area()
+    {
+        var window = CreateWindow(NotSignedInMcp());
+        window.PopulateUiFromConfig(ValidConfig());
+        window.ConfirmSignInAgain = () => Task.FromResult(true);
+        var signInCancelled = false;
+        window.SignInAgain = async ct =>
+        {
+            try { await Task.Delay(Timeout.Infinite, ct); }
+            catch (OperationCanceledException) { signInCancelled = true; throw new AtlassianAuthException("Sign-in was cancelled or timed out.", abortsSignIn: true); }
+        };
+        var reportRuns = 0;
+        window.RunReport = _ => { reportRuns++; return Task.FromResult(true); };
+        Assert.False(window.CancelSignInButton.IsVisible);
+
+        var flow = window.RunReportFlowAsync(sendEmail: false);
+        for (var i = 0; i < 50 && !window.CancelSignInButton.IsVisible; i++)
+        {
+            Dispatcher.UIThread.RunJobs();
+            await Task.Delay(10);
+        }
+        Assert.True(window.CancelSignInButton.IsVisible);
+
+        window.CancelSignInButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Avalonia.Controls.Button.ClickEvent));
+        await flow.WaitAsync(TimeSpan.FromSeconds(5));
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.True(signInCancelled);
+        Assert.Equal(0, reportRuns);
+        Assert.False(window.CancelSignInButton.IsVisible);
+        Assert.Contains("Atlassian sign-in was cancelled", window.LogTextBox.Text);
     }
 
     private static AppConfig ValidConfig() => new()

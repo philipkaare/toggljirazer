@@ -141,6 +141,40 @@ public class AtlassianSignInControlTests : IDisposable
         Assert.Equal("Sign in with Atlassian", control.SignInButton.Content);
     }
 
+    private static void Click(Avalonia.Controls.Button button) =>
+        button.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Avalonia.Controls.Button.ClickEvent));
+
+    [AvaloniaFact]
+    public async Task Sign_in_shows_wait_message_url_and_cancel_button_and_cancel_stops_it()
+    {
+        var control = new AtlassianSignInControl();
+        var url = new Uri("https://auth.example.test/authorize?client_id=x");
+        var cancelled = new TaskCompletionSource();
+        control.SignIn = async (ct, showUri) =>
+        {
+            showUri(url);
+            try { await Task.Delay(Timeout.Infinite, ct); }
+            catch (OperationCanceledException) { cancelled.SetResult(); throw new AtlassianAuthException("Sign-in was cancelled or timed out.", abortsSignIn: true); }
+        };
+
+        Click(control.SignInButton);
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal("Cancel sign-in", control.SignInButton.Content);
+        Assert.True(control.SignInButton.IsEnabled);
+        Assert.Equal("Waiting for you to finish signing in in your browser…", control.StatusText.Text);
+        Assert.True(control.AuthorizationUrlPanel.IsVisible);
+        Assert.Equal(url.AbsoluteUri, control.AuthorizationUrlText.Text);
+
+        Click(control.SignInButton);
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        Assert.Equal("Sign-in cancelled", control.StatusText.Text);
+        Assert.Equal("Sign in with Atlassian", control.SignInButton.Content);
+        Assert.False(control.AuthorizationUrlPanel.IsVisible);
+    }
+
     [AvaloniaFact]
     public async Task Status_check_loads_sites_with_a_single_sites_call()
     {
