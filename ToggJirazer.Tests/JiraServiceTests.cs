@@ -380,6 +380,97 @@ public class JiraServiceTests
             service.GetFixVersionsWithRecentlyUpdatedIssuesAsync(["v1"], new DateTime(2026, 1, 1)));
     }
 
+    private static FakeJiraTools FieldListing(params (string Key, Dictionary<string, string> Names)[] recent) =>
+        new((tool, args) =>
+        {
+            if (tool == GetIssue)
+            {
+                var key = (string)args["issueIdOrKey"]!;
+                return NamesResponse(Issue(key), recent.First(r => r.Key == key).Names);
+            }
+            return Page(recent.Select(r => Issue(r.Key)));
+        });
+
+    [Fact]
+    public async Task ListFieldNames_merges_names_across_projects()
+    {
+        var tools = FieldListing(
+            ("ABC-1", new() { ["summary"] = "Summary", [BudgetId] = "Budget" }),
+            ("ABC-2", new() { ["summary"] = "Summary" }),
+            ("XYZ-1", new() { ["summary"] = "Summary", [AccountId] = "account" }));
+        var service = new JiraService(Config, tools);
+
+        var fields = await service.ListFieldNamesAsync();
+
+        Assert.Equal(
+            [(AccountId, "account"), (BudgetId, "Budget"), ("summary", "Summary")],
+            fields.ToArray());
+        var getCalls = tools.CallsTo(GetIssue).ToList();
+        Assert.Equal(["ABC-1", "XYZ-1"], getCalls.Select(c => (string)c.Args["issueIdOrKey"]!));
+        Assert.Equal(["*all"], Fields(getCalls[0].Args));
+        Assert.Equal("names", getCalls[0].Args["expand"]);
+    }
+
+    [Fact]
+    public async Task ListFieldNames_jql_is_bounded()
+    {
+        var tools = FieldListing(("ABC-1", AllNames));
+
+        await new JiraService(Config, tools).ListFieldNamesAsync();
+
+        var search = Assert.Single(tools.CallsTo(Search)).Args;
+        Assert.Contains("updated >=", Jql(search));
+        Assert.Equal(50, search["maxResults"]);
+        Assert.Equal(["key"], Fields(search));
+    }
+
+    [Fact]
+    public async Task ListFieldNames_empty_when_no_recent_issues()
+    {
+        var tools = FieldListing();
+
+        var fields = await new JiraService(Config, tools).ListFieldNamesAsync();
+
+        Assert.Empty(fields);
+        Assert.Empty(tools.CallsTo(GetIssue));
+    }
+
+    [Fact]
+    public async Task Empty_field_name_skips_field_without_warning()
+    {
+        var config = new JiraConfig { CloudId = "cloud-1", BudgetFieldName = "", AccountFieldName = "Nonexistent" };
+        var tools = Backed([Issue("ABC-1", budgetOption: "Fondsdrift", account: "Kunde A")]);
+        var original = Console.Out;
+        var captured = new StringWriter();
+        Console.SetOut(captured);
+        try
+        {
+            var result = await new JiraService(config, tools).GetIssuesBulkAsync(["ABC-1"]);
+
+            Assert.Null(result["ABC-1"]!.Budget);
+            Assert.DoesNotContain(BudgetId, Fields(Assert.Single(tools.CallsTo(Search)).Args));
+        }
+        finally
+        {
+            Console.SetOut(original);
+        }
+
+        var output = captured.ToString();
+        Assert.DoesNotContain("Jira field ''", output);
+        Assert.Contains("Jira field 'Nonexistent' not found", output);
+    }
+
+    [Fact]
+    public async Task Both_field_names_empty_make_no_field_lookup()
+    {
+        var config = new JiraConfig { CloudId = "cloud-1", BudgetFieldName = "", AccountFieldName = "" };
+        var tools = Backed([Issue("ABC-1")]);
+
+        await new JiraService(config, tools).GetIssuesBulkAsync(["ABC-1"]);
+
+        Assert.Empty(tools.CallsTo(GetIssue));
+    }
+
     [Fact]
     public async Task Every_jql_is_bounded()
     {

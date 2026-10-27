@@ -57,6 +57,15 @@ public class JiraService
             .ToList();
         if (keysByProject.Count == 0) return;
 
+        // An empty field name means "skip this field": no ID is requested and nothing is warned about.
+        var wantBudget = !string.IsNullOrWhiteSpace(_config.BudgetFieldName);
+        var wantAccount = !string.IsNullOrWhiteSpace(_config.AccountFieldName);
+        if (!wantBudget && !wantAccount)
+        {
+            _fieldIdsResolved = true;
+            return;
+        }
+
         _fieldIdsResolved = true;
         var lookups = 0;
         foreach (var projectKeys in keysByProject)
@@ -65,7 +74,7 @@ public class JiraService
             // to the next key of the same project.
             foreach (var key in projectKeys)
             {
-                if (_budgetFieldId != null && _accountFieldId != null) break;
+                if ((_budgetFieldId != null || !wantBudget) && (_accountFieldId != null || !wantAccount)) break;
                 if (lookups >= MaxFieldIdLookups) break;
                 lookups++;
 
@@ -87,18 +96,67 @@ public class JiraService
                 }
 
                 var names = ReadFieldNames(root);
-                _budgetFieldId ??= names.FirstOrDefault(n =>
-                    string.Equals(n.Name, _config.BudgetFieldName, StringComparison.OrdinalIgnoreCase)).Id;
-                _accountFieldId ??= names.FirstOrDefault(n =>
-                    string.Equals(n.Name, _config.AccountFieldName, StringComparison.OrdinalIgnoreCase)).Id;
+                if (wantBudget)
+                    _budgetFieldId ??= names.FirstOrDefault(n =>
+                        string.Equals(n.Name, _config.BudgetFieldName, StringComparison.OrdinalIgnoreCase)).Id;
+                if (wantAccount)
+                    _accountFieldId ??= names.FirstOrDefault(n =>
+                        string.Equals(n.Name, _config.AccountFieldName, StringComparison.OrdinalIgnoreCase)).Id;
                 break;
             }
         }
 
-        if (_budgetFieldId == null)
+        if (wantBudget && _budgetFieldId == null)
             Console.WriteLine($"  Warning: Jira field '{_config.BudgetFieldName}' not found in field metadata.");
-        if (_accountFieldId == null)
+        if (wantAccount && _accountFieldId == null)
             Console.WriteLine($"  Warning: Jira field '{_config.AccountFieldName}' not found in field metadata.");
+    }
+
+    /// <summary>
+    /// Lists the Jira field IDs and display names of the site, for the setup wizard. Looks at the issues
+    /// updated in the last 90 days, reads the field names of the first issue of each of up to
+    /// <see cref="MaxFieldIdLookups"/> projects, and merges them (distinct by ID, sorted by name).
+    /// Empty when there are no recent issues.
+    /// </summary>
+    public async Task<IReadOnlyList<(string Id, string Name)>> ListFieldNamesAsync(CancellationToken ct = default)
+    {
+        var search = await _tools.CallToolAsync(SearchTool, new Dictionary<string, object?>
+        {
+            ["cloudId"] = _config.CloudId,
+            ["jql"] = "updated >= -90d order by updated desc",
+            ["fields"] = new[] { "key" },
+            ["maxResults"] = 50,
+            ["responseContentFormat"] = ContentFormat,
+        }, ct);
+
+        var keys = IssueNodes(search)
+            .Select(n => n.TryGetProperty("key", out var k) && k.ValueKind == JsonValueKind.String ? k.GetString() : null)
+            .Where(k => !string.IsNullOrWhiteSpace(k))
+            .Select(k => k!)
+            .GroupBy(ProjectOf, StringComparer.OrdinalIgnoreCase)
+            .Select(g => g.First())
+            .Take(MaxFieldIdLookups)
+            .ToList();
+
+        var merged = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var key in keys)
+        {
+            var root = await _tools.CallToolAsync(GetIssueTool, new Dictionary<string, object?>
+            {
+                ["cloudId"] = _config.CloudId,
+                ["issueIdOrKey"] = key,
+                ["fields"] = new[] { "*all" },
+                ["expand"] = "names",
+                ["responseContentFormat"] = ContentFormat,
+            }, ct);
+            foreach (var (id, name) in ReadFieldNames(root))
+                merged.TryAdd(id, name);
+        }
+
+        return merged
+            .Select(kv => (Id: kv.Key, Name: kv.Value))
+            .OrderBy(f => f.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     private static string ProjectOf(string issueKey)
