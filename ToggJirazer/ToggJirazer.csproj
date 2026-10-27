@@ -4,14 +4,12 @@
     <OutputType>Exe</OutputType>
     <DisableWinExeOutputInference>true</DisableWinExeOutputInference>
     <TargetFramework>net10.0</TargetFramework>
-    <TargetFramework Condition="$([MSBuild]::IsOSPlatform('Windows'))">net10.0-windows</TargetFramework>
-    <UseWPF Condition="'$(TargetFramework)' == 'net10.0-windows'">true</UseWPF>
-    <EnableWindowsTargeting>true</EnableWindowsTargeting>
     <StartupObject>ToggJirazer.Program</StartupObject>
     <ApplicationIcon>Assets/toggjirazer.ico</ApplicationIcon>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>ToggJirazer</RootNamespace>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
   </PropertyGroup>
 
   <ItemGroup>
@@ -19,6 +17,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Avalonia" Version="11.3.22" />
+    <PackageReference Include="Avalonia.Desktop" Version="11.3.22" />
+    <PackageReference Include="Avalonia.Fonts.Inter" Version="11.3.22" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="11.3.22" />
     <PackageReference Include="MailKit" Version="4.17.0" />
     <PackageReference Include="ClosedXML" Version="0.104.2" />
     <PackageReference Include="CsvHelper" Version="33.0.1" />
@@ -28,18 +30,16 @@
   </ItemGroup>
 
   <ItemGroup>
+    <AvaloniaResource Include="Assets/**" />
+    <InternalsVisibleTo Include="ToggJirazer.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <Content Include="appsettings.development.json" Condition="Exists('appsettings.development.json')">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <Content Include="appsettings.json">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
-  </ItemGroup>
-
-  <ItemGroup Condition="'$(TargetFramework)' != 'net10.0-windows'">
-    <Compile Remove="App.xaml.cs;MainWindow.xaml.cs" />
-  </ItemGroup>
-  <ItemGroup Condition="'$(TargetFramework)' == 'net10.0-windows'">
-    <Resource Include="Assets/toggjirazer.ico" />
   </ItemGroup>
 </Project>

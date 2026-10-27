@@ -1,10 +1,11 @@
 using System.IO;
+using Avalonia;
 using ToggJirazer.Cli;
 using ToggJirazer.Services;
 
 namespace ToggJirazer;
 
-internal static class Program
+public static class Program
 {
     private static readonly string SettingsPath = SettingsLocator.UserSettingsPath();
 
@@ -32,16 +33,17 @@ internal static class Program
                 Console.WriteLine("Automatic monthly email has been removed. Delete the 'ToggJirazer AutoReport' scheduled task.");
                 return 0;
 
-#if WINDOWS
             case LaunchMode.Gui:
                 App.SettingsPath = SettingsPath;
-                var app = new App();
-                return app.Run();
-#endif
+                return BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
+
             default:
                 return await HeadlessRunner.RunAsync(settings.Load());
         }
     }
+
+    public static AppBuilder BuildAvaloniaApp() =>
+        AppBuilder.Configure<App>().UsePlatformDetect().WithInterFont().LogToTrace();
 
     private static void PrintUsage()
     {
