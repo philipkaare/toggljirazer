@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Windows;
 using System.Windows.Controls;
@@ -55,8 +56,8 @@ public partial class MainWindow : Window
         JiraUserEmail.Text = config.Jira.UserEmail;
         JiraApiToken.Password = config.Jira.ApiToken;
 
-        ReportStartDate.Text = config.Report.StartDate ?? new DateTime(DateTime.Today.Year, 1, 1).ToString("yyyy-MM-dd");
-        ReportEndDate.Text = config.Report.EndDate ?? DateTime.Today.ToString("yyyy-MM-dd");
+        ReportStartDate.SelectedDate = ParseConfigDate(config.Report.StartDate) ?? new DateTime(DateTime.Today.Year, 1, 1);
+        ReportEndDate.SelectedDate = ParseConfigDate(config.Report.EndDate) ?? DateTime.Today;
         ReportOutputFile.Text = config.Report.OutputFile;
 
         foreach (var item in ReportFormat.Items.Cast<ComboBoxItem>())
@@ -79,6 +80,16 @@ public partial class MainWindow : Window
         EmailRecipients.Text = config.Email.Recipients;
         EmailSubject.Text = config.Email.Subject;
         EmailBody.Text = config.Email.Body;
+    }
+
+    private static DateTime? ParseConfigDate(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+        if (DateTime.TryParseExact(value.Trim(), "yyyy-MM-dd", CultureInfo.InvariantCulture,
+                DateTimeStyles.None, out var exact))
+            return exact;
+        return DateTime.TryParse(value, out var loose) ? loose : null;
     }
 
     private AppConfig ReadConfigFromUi()
@@ -104,8 +115,8 @@ public partial class MainWindow : Window
             },
             Report = new ReportConfig
             {
-                StartDate = string.IsNullOrWhiteSpace(ReportStartDate.Text) ? null : ReportStartDate.Text.Trim(),
-                EndDate = string.IsNullOrWhiteSpace(ReportEndDate.Text) ? null : ReportEndDate.Text.Trim(),
+                StartDate = ReportStartDate.SelectedDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                EndDate = ReportEndDate.SelectedDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
                 OutputFile = ReportOutputFile.Text.Trim(),
                 Format = (ReportFormat.SelectedItem as ComboBoxItem)?.Content?.ToString() ?? "xlsx"
             },
