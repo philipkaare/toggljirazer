@@ -21,6 +21,8 @@ public sealed class TogglSetupService : IDisposable
 {
     private const string BaseUrl = "https://api.track.toggl.com/api/v9";
     private const int PerPage = 200;
+    // Guards against a Toggl that ignores "page" and keeps answering with the same full page.
+    private const int MaxProjectPages = 50;
     private const string WrongPasswordMessage =
         "Wrong email or password. If you sign in to Toggl with Google, Apple or SSO, use an API token instead.";
     private const string TokenRejectedMessage = "That API token was not accepted by Toggl.";
@@ -37,25 +39,25 @@ public sealed class TogglSetupService : IDisposable
 
     public async Task<TogglAccount> SignInAsync(string email, string password, CancellationToken ct = default)
     {
-        var dto = await GetAsync<MeDto>($"{BaseUrl}/me", email, password, WrongPasswordMessage, ct);
+        var dto = await GetAsync<MeDto>($"{BaseUrl}/me", email, password, password, WrongPasswordMessage, ct);
         return ToAccount(dto);
     }
 
     public async Task<TogglAccount> ValidateTokenAsync(string apiToken, CancellationToken ct = default)
     {
-        var dto = await GetAsync<MeDto>($"{BaseUrl}/me", apiToken, "api_token", TokenRejectedMessage, ct);
+        var dto = await GetAsync<MeDto>($"{BaseUrl}/me", apiToken, "api_token", apiToken, TokenRejectedMessage, ct);
         return ToAccount(dto);
     }
 
     public async Task<IReadOnlyList<TogglOrganization>> GetOrganizationsAsync(string apiToken, CancellationToken ct = default)
     {
-        var list = await GetAsync<List<OrganizationDto>>($"{BaseUrl}/me/organizations", apiToken, "api_token", TokenRejectedMessage, ct);
+        var list = await GetAsync<List<OrganizationDto>>($"{BaseUrl}/me/organizations", apiToken, "api_token", apiToken, TokenRejectedMessage, ct);
         return (list ?? []).Select(o => new TogglOrganization(o.Id, o.Name ?? "")).ToList();
     }
 
     public async Task<IReadOnlyList<TogglWorkspace>> GetWorkspacesAsync(string apiToken, long organizationId, CancellationToken ct = default)
     {
-        var list = await GetAsync<List<WorkspaceDto>>($"{BaseUrl}/me/workspaces", apiToken, "api_token", TokenRejectedMessage, ct);
+        var list = await GetAsync<List<WorkspaceDto>>($"{BaseUrl}/me/workspaces", apiToken, "api_token", apiToken, TokenRejectedMessage, ct);
         return (list ?? [])
             .Where(w => w.OrganizationId == organizationId)
             .Select(w => new TogglWorkspace(w.Id, w.Name ?? "", w.OrganizationId))
@@ -65,12 +67,15 @@ public sealed class TogglSetupService : IDisposable
     public async Task<IReadOnlyList<TogglProject>> GetActiveProjectsAsync(string apiToken, long workspaceId, CancellationToken ct = default)
     {
         var all = new List<TogglProject>();
-        for (var page = 1; ; page++)
+        long? previousFirstId = null;
+        for (var page = 1; page <= MaxProjectPages; page++)
         {
             var url = $"{BaseUrl}/workspaces/{workspaceId}/projects?active=true&per_page={PerPage}&page={page}";
-            var items = await GetAsync<List<ProjectDto>>(url, apiToken, "api_token", TokenRejectedMessage, ct) ?? [];
+            var items = await GetAsync<List<ProjectDto>>(url, apiToken, "api_token", apiToken, TokenRejectedMessage, ct) ?? [];
+            if (items.Count > 0 && items[0].Id == previousFirstId) break;
             all.AddRange(items.Select(p => new TogglProject(p.Id, p.Name ?? "")));
             if (items.Count < PerPage) break;
+            previousFirstId = items[0].Id;
         }
         return all.OrderBy(p => p.Name, StringComparer.OrdinalIgnoreCase).ToList();
     }
@@ -80,9 +85,11 @@ public sealed class TogglSetupService : IDisposable
             ? throw new TogglSetupException("Toggl returned an unexpected response.")
             : new TogglAccount(dto.ApiToken, dto.FullName ?? "", dto.Email ?? "");
 
-    private async Task<T?> GetAsync<T>(string url, string user, string secret, string authFailureMessage, CancellationToken ct)
+    /// <param name="secret">The credential to keep out of messages: the password, or the API token itself.</param>
+    private async Task<T?> GetAsync<T>(string url, string user, string password, string secret, string authFailureMessage,
+        CancellationToken ct)
     {
-        var credentials = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{user}:{secret}"));
+        var credentials = Convert.ToBase64String(Encoding.UTF8.GetBytes($"{user}:{password}"));
         using var request = new HttpRequestMessage(HttpMethod.Get, url);
         request.Headers.Authorization = new AuthenticationHeaderValue("Basic", credentials);
 

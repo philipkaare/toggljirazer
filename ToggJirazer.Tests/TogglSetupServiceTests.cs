@@ -110,6 +110,63 @@ public class TogglSetupServiceTests
     }
 
     [Fact]
+    public async Task Projects_stop_when_toggl_ignores_page()
+    {
+        var page = "[" + string.Join(",", Enumerable.Range(1, 200).Select(i => $$"""{"id":{{i}},"name":"P{{i}}"}""")) + "]";
+        var handler = new FakeHttpHandler(_ => FakeHttpHandler.Json(page));
+        using var svc = new TogglSetupService(handler);
+
+        var projects = await svc.GetActiveProjectsAsync("t1", 77);
+
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal(200, projects.Count);
+    }
+
+    [Fact]
+    public async Task Projects_pagination_is_capped_at_50_pages()
+    {
+        var handler = new FakeHttpHandler(r =>
+        {
+            var n = int.Parse(System.Web.HttpUtility.ParseQueryString(r.RequestUri!.Query)["page"]!);
+            return FakeHttpHandler.Json("[" + string.Join(",", Enumerable.Range(n * 1000, 200)
+                .Select(i => $$"""{"id":{{i}},"name":"P{{i}}"}""")) + "]");
+        });
+        using var svc = new TogglSetupService(handler);
+
+        var projects = await svc.GetActiveProjectsAsync("t1", 77);
+
+        Assert.Equal(50, handler.Requests.Count);
+        Assert.Equal(50 * 200, projects.Count);
+    }
+
+    [Fact]
+    public async Task Echoed_api_token_not_in_exception_messages()
+    {
+        var handler = new FakeHttpHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError)
+        {
+            ReasonPhrase = "Server Error",
+            Content = new StringContent("bad request for token s3cr3t-tok")
+        });
+        using var svc = new TogglSetupService(handler);
+
+        var ex = await Assert.ThrowsAsync<TogglSetupException>(() => svc.GetOrganizationsAsync("s3cr3t-tok"));
+
+        Assert.DoesNotContain("s3cr3t-tok", ex.Message);
+        Assert.Equal("Toggl returned 500: Server Error", ex.Message);
+    }
+
+    [Fact]
+    public async Task Body_mentioning_api_token_word_is_shown_for_token_calls()
+    {
+        var handler = new FakeHttpHandler(_ => FakeHttpHandler.Json("api_token quota exceeded", HttpStatusCode.TooManyRequests));
+        using var svc = new TogglSetupService(handler);
+
+        var ex = await Assert.ThrowsAsync<TogglSetupException>(() => svc.GetOrganizationsAsync("t1"));
+
+        Assert.Equal("Toggl returned 429: api_token quota exceeded", ex.Message);
+    }
+
+    [Fact]
     public async Task Password_not_in_exception_messages()
     {
         var handler = new FakeHttpHandler(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError)
