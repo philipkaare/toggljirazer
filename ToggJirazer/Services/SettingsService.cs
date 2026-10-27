@@ -21,11 +21,7 @@ public class SettingsService
     {
         var node = LoadJsonNode(_settingsPath) ?? new JsonObject();
 
-        var devPath = Path.Combine(
-            Path.GetDirectoryName(_settingsPath) ?? string.Empty,
-            Path.GetFileNameWithoutExtension(_settingsPath) + ".development" + Path.GetExtension(_settingsPath));
-
-        var devNode = LoadJsonNode(devPath);
+        var devNode = LoadJsonNode(DevelopmentPathFor(_settingsPath));
         if (devNode != null)
             MergeInto(node, devNode);
 
@@ -75,6 +71,11 @@ public class SettingsService
         }
     }
 
+    /// <summary>The sibling development overrides file (appsettings.development.json).</summary>
+    public static string DevelopmentPathFor(string settingsPath) => Path.Combine(
+        Path.GetDirectoryName(settingsPath) ?? string.Empty,
+        Path.GetFileNameWithoutExtension(settingsPath) + ".development" + Path.GetExtension(settingsPath));
+
     private static JsonObject? LoadJsonNode(string path)
     {
         if (!File.Exists(path)) return null;
@@ -94,6 +95,31 @@ public class SettingsService
                 MergeInto(targetObj, sourceObj);
             else
                 target[key] = value?.DeepClone();
+        }
+    }
+
+    /// <summary>
+    /// Keeps development overrides out of the saved file: every value that still equals its
+    /// development override is written as the base file's value (or omitted if it has none).
+    /// </summary>
+    private static void RestoreDevelopmentOverrides(JsonObject target, JsonObject dev, JsonObject? existing)
+    {
+        foreach (var (key, devValue) in dev)
+        {
+            if (devValue is JsonObject devObj)
+            {
+                if (target[key] is JsonObject targetObj)
+                    RestoreDevelopmentOverrides(targetObj, devObj, existing?[key] as JsonObject);
+                continue;
+            }
+
+            if (!target.ContainsKey(key) || !JsonNode.DeepEquals(target[key], devValue))
+                continue;
+
+            if (existing != null && existing.TryGetPropertyValue(key, out var baseValue))
+                target[key] = baseValue?.DeepClone();
+            else
+                target.Remove(key);
         }
     }
 
@@ -136,6 +162,10 @@ public class SettingsService
                 ["Body"] = config.Email.Body
             }
         };
+
+        var devNode = LoadJsonNode(DevelopmentPathFor(_settingsPath));
+        if (devNode != null)
+            RestoreDevelopmentOverrides(node, devNode, LoadJsonNode(_settingsPath));
 
         var options = new JsonSerializerOptions { WriteIndented = true };
         File.WriteAllText(_settingsPath, node.ToJsonString(options), System.Text.Encoding.UTF8);

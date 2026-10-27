@@ -6,17 +6,7 @@ namespace ToggJirazer;
 
 internal static class Program
 {
-    // Resolve appsettings.json from the current working directory so the file the
-    // user edits (and Save writes) is the same one the app reads. Falls back to the
-    // executable's directory when the app is launched from a directory without one.
-    private static readonly string SettingsPath = ResolveSettingsPath();
-
-    private static string ResolveSettingsPath()
-    {
-        var cwdPath = Path.Combine(Directory.GetCurrentDirectory(), "appsettings.json");
-        if (File.Exists(cwdPath)) return cwdPath;
-        return Path.Combine(AppContext.BaseDirectory, "appsettings.json");
-    }
+    private static readonly string SettingsPath = SettingsLocator.UserSettingsPath();
 
     [STAThread]
     private static int Main(string[] args) => RunAsync(args).GetAwaiter().GetResult();
@@ -24,6 +14,12 @@ internal static class Program
     private static async Task<int> RunAsync(string[] args)
     {
         var mode = ArgParser.Resolve(args, Console.IsInputRedirected, Console.IsOutputRedirected);
+        if (mode is not (LaunchMode.Help or LaunchMode.AutoRemoved))
+        {
+            SettingsLocator.EnsureUserSettings(SettingsPath,
+                SettingsLocator.LegacyCandidates(Directory.GetCurrentDirectory(), AppContext.BaseDirectory),
+                Path.Combine(AppContext.BaseDirectory, "appsettings.json"), Console.WriteLine);
+        }
         var settings = new SettingsService(SettingsPath);
 
         switch (mode)
@@ -38,6 +34,7 @@ internal static class Program
 
 #if WINDOWS
             case LaunchMode.Gui:
+                App.SettingsPath = SettingsPath;
                 var app = new App();
                 return app.Run();
 #endif
@@ -56,8 +53,8 @@ internal static class Program
         Console.WriteLine("  --headless,--run Run the report non-interactively using appsettings.json.");
         Console.WriteLine("  --help, -h       Show this help.");
         Console.WriteLine();
-        Console.WriteLine("Configuration is read from appsettings.json in the current working directory");
-        Console.WriteLine("(falling back to the executable's directory). The generated report is written");
-        Console.WriteLine("to the OutputFile path, resolved relative to the working directory.");
+        Console.WriteLine($"Settings are read from {SettingsPath}.");
+        Console.WriteLine("The generated report is written to the OutputFile path, resolved relative to");
+        Console.WriteLine("the working directory.");
     }
 }

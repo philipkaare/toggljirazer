@@ -14,13 +14,10 @@ public partial class MainWindow : Window
     private bool _isRunning;
     private string? _lastOutputPath;
 
-    private static readonly string SettingsPath =
-        Path.Combine(AppContext.BaseDirectory, "appsettings.json");
-
-    public MainWindow()
+    public MainWindow(string settingsPath)
     {
         InitializeComponent();
-        _settingsService = new SettingsService(SettingsPath);
+        _settingsService = new SettingsService(settingsPath);
         PopulateUiFromConfig(_settingsService.Load());
     }
 
