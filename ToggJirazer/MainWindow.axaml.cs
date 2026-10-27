@@ -41,6 +41,7 @@ public partial class MainWindow : Window
         HasAtlassianToken = () => _mcp?.HasStoredSignIn == true;
         PopulateUiFromConfig(_settingsService.Load());
         Opened += MainWindow_Opened;
+        JiraSignIn.SigningInChanged += (_, _) => UpdateButtonsForJiraSignIn();
 
         if (mcp != null)
         {
@@ -82,7 +83,7 @@ public partial class MainWindow : Window
     /// </summary>
     internal async Task OpenSetupAsync()
     {
-        if (_isSetupOpen || _isRunning) return;
+        if (_isSetupOpen || _isRunning || JiraSignIn.IsSigningIn) return;
         _isSetupOpen = true;
         try
         {
@@ -265,9 +266,23 @@ public partial class MainWindow : Window
     private async void SendEmailNow_Click(object? sender, RoutedEventArgs e)
         => await RunReportFlowAsync(sendEmail: true);
 
+    /// <summary>
+    /// While the Jira tab's sign-in waits for the browser, Setup… and the report buttons are disabled: the
+    /// wizard and a run would use (or replace) the Atlassian connection mid sign-in. The control itself stays
+    /// enabled so its "Cancel sign-in" works.
+    /// </summary>
+    private void UpdateButtonsForJiraSignIn()
+    {
+        if (_isRunning) return; // a run restores the buttons itself when it ends
+        var enabled = !JiraSignIn.IsSigningIn;
+        SetupButton.IsEnabled = enabled;
+        RunButton.IsEnabled = enabled;
+        SendEmailNowButton.IsEnabled = enabled;
+    }
+
     internal async Task RunReportFlowAsync(bool sendEmail)
     {
-        if (_isRunning) return;
+        if (_isRunning || JiraSignIn.IsSigningIn) return;
 
         var config = ReadConfigFromUi();
         var error = ReportRunner.ValidateConfig(config);
@@ -377,12 +392,20 @@ public partial class MainWindow : Window
 
     /// <summary>
     /// Checks the Atlassian sign-in before a run and, when it is missing or expired, asks to sign in
-    /// again. Returns false, after logging an error, when the run should stop.
+    /// again. Returns false, after logging an error, when the run should stop. An Atlassian tool error during
+    /// the check isn't a missing sign-in: the run stops without offering a sign-in, which would drop working tokens.
     /// </summary>
     private async Task<bool> EnsureSignedInAsync(AtlassianMcp mcp, Action onSignInAttempt)
     {
-        if (await mcp.IsSignedInAsync(CancellationToken.None))
+        var status = await mcp.CheckSignInAsync(CancellationToken.None);
+        if (status.IsSignedIn)
             return true;
+
+        if (status.ToolError != null)
+        {
+            AppendLog($"[ERROR] {AtlassianMcp.ServerTroubleMessage} Details: {status.ToolError}");
+            return false;
+        }
 
         if (!await ConfirmSignInAgain())
         {

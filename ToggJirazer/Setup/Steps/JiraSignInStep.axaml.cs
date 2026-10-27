@@ -30,6 +30,9 @@ public partial class JiraSignInStep : UserControl
     /// <summary>True while an interactive sign-in waits for the user to finish in the browser.</summary>
     internal bool IsSigningIn => JiraSignIn.IsSigningIn;
 
+    /// <summary>Cancels a waiting Atlassian sign-in, e.g. when the wizard closes.</summary>
+    internal void CancelSignIn() => JiraSignIn.CancelSignIn();
+
     internal async Task EnterAsync()
     {
         // Never prompts or opens a browser; a browser opens only from the control's sign-in button.

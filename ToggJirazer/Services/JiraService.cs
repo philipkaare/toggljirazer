@@ -41,7 +41,7 @@ public class JiraService
 
     /// <summary>
     /// Finds the Budget and Account custom field IDs by name, once per service instance. Tries the keys in
-    /// <paramref name="candidateKeys"/> project by project (at most <see cref="MaxFieldIdLookups"/>
+    /// <paramref name="candidateKeys"/> round-robin across projects (at most <see cref="MaxFieldIdLookups"/>
     /// <c>getJiraIssue</c> calls in total), stopping as soon as both are found.
     /// Does nothing when there is no candidate key yet.
     /// </summary>
@@ -49,12 +49,15 @@ public class JiraService
     {
         if (_fieldIdsResolved) return;
 
-        // Keys of the first project first, then the next project's, and so on.
+        // Round-robin over projects: the first key of every project, then the second key of every
+        // project, and so on, so one big project lacking a field can't use up all the probes.
         var keys = candidateKeys
             .Where(k => !string.IsNullOrWhiteSpace(k))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .GroupBy(ProjectOf, StringComparer.OrdinalIgnoreCase)
-            .SelectMany(g => g)
+            .SelectMany(g => g.Select((key, rank) => (key, rank)))
+            .OrderBy(x => x.rank) // stable: keeps project order within a rank
+            .Select(x => x.key)
             .ToList();
         if (keys.Count == 0) return;
 

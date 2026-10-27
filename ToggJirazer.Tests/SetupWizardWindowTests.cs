@@ -298,6 +298,32 @@ public class SetupWizardWindowTests : IDisposable
     }
 
     [AvaloniaFact]
+    public async Task Closing_the_wizard_cancels_a_waiting_atlassian_sign_in()
+    {
+        var wizard = CreateWizard(CompleteConfig());
+        wizard.JiraSignInStep.JiraSignIn.LoadSitesIfSignedIn = () => Task.FromResult<IReadOnlyList<AtlassianSite>?>(null);
+        CancellationToken signInToken = default;
+        var cancelled = new TaskCompletionSource();
+        wizard.JiraSignInStep.JiraSignIn.SignIn = async (ct, _) =>
+        {
+            signInToken = ct;
+            try { await Task.Delay(Timeout.Infinite, ct); }
+            catch (OperationCanceledException) { cancelled.TrySetResult(); throw; }
+        };
+        wizard.Show();
+        await AdvanceToAsync(wizard, SetupStep.JiraSignIn);
+        wizard.JiraSignInStep.JiraSignIn.SignInButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Button.ClickEvent));
+        Dispatcher.UIThread.RunJobs();
+        Assert.True(wizard.JiraSignInStep.IsSigningIn);
+
+        // The title bar's X closes the window without going through the Cancel button.
+        wizard.Close();
+
+        Assert.True(signInToken.IsCancellationRequested);
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [AvaloniaFact]
     public async Task Toggl_result_arriving_after_step_change_is_dropped()
     {
         var held = new HeldHttpHandler(TwoAccountApi);

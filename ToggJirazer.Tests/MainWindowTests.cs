@@ -194,6 +194,75 @@ public class MainWindowTests : IDisposable
         Assert.Contains("Atlassian sign-in was cancelled", window.LogTextBox.Text);
     }
 
+    [AvaloniaFact]
+    public async Task Setup_and_report_buttons_are_disabled_while_the_jira_tab_sign_in_waits()
+    {
+        var window = CreateWindow(NotSignedInMcp());
+        window.PopulateUiFromConfig(ValidConfig());
+        var cancelled = new TaskCompletionSource();
+        window.JiraSignIn.SignIn = async (ct, _) =>
+        {
+            try { await Task.Delay(Timeout.Infinite, ct); }
+            catch (OperationCanceledException) { cancelled.TrySetResult(); throw; }
+        };
+        var reportRuns = 0;
+        window.RunReport = _ => { reportRuns++; return Task.FromResult(true); };
+        var wizardShown = false;
+        window.ShowWizard = _ => { wizardShown = true; return Task.FromResult<AppConfig?>(null); };
+
+        window.JiraSignIn.SignInButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Avalonia.Controls.Button.ClickEvent));
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.False(window.SetupButton.IsEnabled);
+        Assert.False(window.RunButton.IsEnabled);
+        Assert.False(window.SendEmailNowButton.IsEnabled);
+        // The control's own "Cancel sign-in" stays usable.
+        Assert.True(window.JiraSignIn.IsEnabled);
+        Assert.True(window.JiraSignIn.SignInButton.IsEnabled);
+        // Nor can a run or the wizard start another way while the sign-in waits.
+        await window.RunReportFlowAsync(sendEmail: false);
+        await window.OpenSetupAsync();
+        Assert.Equal(0, reportRuns);
+        Assert.False(wizardShown);
+
+        window.JiraSignIn.SignInButton.RaiseEvent(new Avalonia.Interactivity.RoutedEventArgs(Avalonia.Controls.Button.ClickEvent));
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        for (var i = 0; i < 50 && !window.RunButton.IsEnabled; i++)
+        {
+            Dispatcher.UIThread.RunJobs();
+            await Task.Delay(10);
+        }
+
+        Assert.True(window.SetupButton.IsEnabled);
+        Assert.True(window.RunButton.IsEnabled);
+        Assert.True(window.SendEmailNowButton.IsEnabled);
+    }
+
+    [AvaloniaFact]
+    public async Task Run_stops_without_offering_sign_in_when_the_sign_in_check_hits_a_tool_error()
+    {
+        var store = new AtlassianTokenStore(NewPath("atlassian-auth.json"));
+        await store.StoreTokensAsync(new TokenContainer { TokenType = "Bearer", AccessToken = "a", ObtainedAt = DateTimeOffset.UtcNow }, CancellationToken.None);
+        var tools = new ToggJirazer.Tests.Fakes.FakeJiraTools((_, _) => throw new AtlassianToolException("Internal server error", 500));
+        await using var mcp = new AtlassianMcp(store, _ => throw new InvalidOperationException("Tests never open a browser."), tools);
+        var window = CreateWindow(mcp);
+        window.PopulateUiFromConfig(ValidConfig());
+        var prompted = false;
+        var reportRuns = 0;
+        window.ConfirmSignInAgain = () => { prompted = true; return Task.FromResult(true); };
+        window.SignInAgain = _ => throw new InvalidOperationException("Must not sign in again.");
+        window.RunReport = _ => { reportRuns++; return Task.FromResult(true); };
+
+        await window.RunReportFlowAsync(sendEmail: false);
+        Dispatcher.UIThread.RunJobs();
+
+        Assert.False(prompted);
+        Assert.Equal(0, reportRuns);
+        Assert.Contains("[ERROR] Atlassian is having trouble right now — try again in a moment. Details: Internal server error",
+            window.LogTextBox.Text);
+        Assert.True(store.HasTokens); // the working sign-in is kept
+    }
+
     private static AppConfig ValidConfig() => new()
     {
         Toggl = new TogglConfig { ApiToken = "tt", OrganizationId = 1, WorkspaceId = 2, ProjectId = 3 },

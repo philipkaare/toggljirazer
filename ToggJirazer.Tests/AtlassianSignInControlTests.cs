@@ -176,6 +176,30 @@ public class AtlassianSignInControlTests : IDisposable
     }
 
     [AvaloniaFact]
+    public async Task Status_refresh_during_a_waiting_sign_in_leaves_the_sign_in_state_alone()
+    {
+        var control = new AtlassianSignInControl();
+        var checks = 0;
+        control.LoadSitesIfSignedIn = () => { checks++; return Task.FromResult<IReadOnlyList<AtlassianSite>?>(null); };
+        control.SignIn = async (ct, showUri) =>
+        {
+            showUri(new Uri("https://auth.example.test/authorize"));
+            await Task.Delay(Timeout.Infinite, ct);
+        };
+        Click(control.SignInButton);
+        Avalonia.Threading.Dispatcher.UIThread.RunJobs();
+
+        await control.RefreshStatusAsync();
+
+        Assert.Equal(0, checks);
+        Assert.True(control.IsSigningIn);
+        Assert.Equal("Cancel sign-in", control.SignInButton.Content);
+        Assert.Equal("Waiting for you to finish signing in in your browser…", control.StatusText.Text);
+        Assert.True(control.AuthorizationUrlPanel.IsVisible);
+        control.CancelSignIn();
+    }
+
+    [AvaloniaFact]
     public async Task Status_check_loads_sites_with_a_single_sites_call()
     {
         var store = new AtlassianTokenStore(AuthPath);

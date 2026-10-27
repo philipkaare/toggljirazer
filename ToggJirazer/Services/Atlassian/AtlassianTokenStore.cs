@@ -19,7 +19,7 @@ public sealed class AtlassianTokenStore : ITokenCache
     private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("ToggJirazer.AtlassianTokenStore");
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = false };
 
-    private const int ReadRetries = 3;
+    private const int DefaultReadRetries = 3;
     private static readonly TimeSpan ReadRetryDelay = TimeSpan.FromMilliseconds(50);
 
     // One lock per file, shared by every store instance in this process that uses it.
@@ -28,11 +28,22 @@ public sealed class AtlassianTokenStore : ITokenCache
 
     private readonly string _filePath;
     private readonly object _writeLock;
+    private readonly int _readRetries;
+    private readonly Action<int> _waitBeforeRetry;
 
     public AtlassianTokenStore(string filePath)
+        : this(filePath, DefaultReadRetries, _ => Thread.Sleep(ReadRetryDelay)) { }
+
+    /// <summary>
+    /// For tests: how many times a locked file is retried, and the wait before each retry
+    /// (given the zero-based retry number) instead of a fixed sleep.
+    /// </summary>
+    internal AtlassianTokenStore(string filePath, int readRetries, Action<int> waitBeforeRetry)
     {
         _filePath = filePath;
         _writeLock = WriteLocks.GetOrAdd(Path.GetFullPath(filePath), _ => new object());
+        _readRetries = readRetries;
+        _waitBeforeRetry = waitBeforeRetry;
     }
 
     /// <summary>The lock guarding writes to this store's file (shared per full path). Exposed for tests.</summary>
@@ -99,9 +110,9 @@ public sealed class AtlassianTokenStore : ITokenCache
             {
                 bytes = ReadBytes();
             }
-            catch (IOException) when (retry < ReadRetries)
+            catch (IOException) when (retry < _readRetries)
             {
-                Thread.Sleep(ReadRetryDelay);
+                _waitBeforeRetry(retry);
                 continue;
             }
             catch

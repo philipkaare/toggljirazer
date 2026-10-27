@@ -68,10 +68,12 @@ public partial class AtlassianSignInControl : UserControl
 
     /// <summary>
     /// Checks the stored sign-in without opening a browser and loads the sites when signed in.
-    /// Never throws: a failed check is shown in the status line.
+    /// Never throws: a failed check is shown in the status line. Does nothing while an interactive sign-in
+    /// waits; the sign-in refreshes the status itself when it ends.
     /// </summary>
     public async Task RefreshStatusAsync()
     {
+        if (_signInCts != null) return;
         var generation = ++_refreshGeneration;
         try
         {
@@ -156,12 +158,18 @@ public partial class AtlassianSignInControl : UserControl
         UpdateSignedInStatus();
     }
 
+    /// <summary>
+    /// Cancels a waiting interactive sign-in (stops the browser-callback listener). Does nothing when no
+    /// sign-in is waiting. Called when the window hosting the control closes.
+    /// </summary>
+    internal void CancelSignIn() => _signInCts?.Cancel();
+
     private async void SignInButton_Click(object? sender, RoutedEventArgs e)
     {
         // While signing in, the button is "Cancel sign-in".
         if (_signInCts != null)
         {
-            _signInCts.Cancel();
+            CancelSignIn();
             return;
         }
 

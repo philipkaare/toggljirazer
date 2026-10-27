@@ -175,10 +175,27 @@ public class JiraServiceTests
 
         var result = await service.GetIssuesBulkAsync(["ABC-1", "ABC-2", "XYZ-1"]);
 
-        // The rest of the same project is tried first, then the next project.
+        // The first key of each project is tried before a second key of any project.
         var getCalls = tools.CallsTo(GetIssue).Select(c => c.Args["issueIdOrKey"]).ToList();
-        Assert.Equal(["ABC-1", "ABC-2", "XYZ-1"], getCalls);
+        Assert.Equal(["ABC-1", "XYZ-1"], getCalls);
         Assert.True(tools.Calls.Count <= 5, $"Expected at most 5 calls, got {tools.Calls.Count}");
+        Assert.Equal("Drift", result["XYZ-1"]!.Budget);
+    }
+
+    [Fact]
+    public async Task Field_ids_probe_other_projects_before_more_keys_of_a_big_project()
+    {
+        // Six ABC keys whose project lacks Budget must not use up the five probes before XYZ is tried.
+        var abcKeys = Enumerable.Range(1, 6).Select(n => $"ABC-{n}").ToList();
+        var tools = Backed(
+            abcKeys.Select(k => Issue(k)).Append(Issue("XYZ-1", budgetOption: "Drift")),
+            key => key.StartsWith("ABC") ? new() { [AccountId] = "Account" } : AllNames);
+        var service = new JiraService(Config, tools);
+
+        var result = await service.GetIssuesBulkAsync([.. abcKeys, "XYZ-1"]);
+
+        var getCalls = tools.CallsTo(GetIssue).Select(c => c.Args["issueIdOrKey"]).ToList();
+        Assert.Equal(["ABC-1", "XYZ-1"], getCalls);
         Assert.Equal("Drift", result["XYZ-1"]!.Budget);
     }
 

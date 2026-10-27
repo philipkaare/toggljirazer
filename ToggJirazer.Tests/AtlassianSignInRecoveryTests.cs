@@ -130,6 +130,12 @@ public class AtlassianSignInRecoveryTests : IDisposable
         new AtlassianToolException("Internal server error", statusCode: 500),
         new AtlassianToolException("Bad gateway", statusCode: 502),
         new HttpRequestException("Service unavailable", null, System.Net.HttpStatusCode.ServiceUnavailable),
+        // The SDK wraps transport failures; the 5xx is found anywhere in the InnerException chain.
+        new ModelContextProtocol.McpException("Transport error",
+            new HttpRequestException("Service unavailable", null, System.Net.HttpStatusCode.ServiceUnavailable)),
+        new InvalidOperationException("Outer",
+            new ModelContextProtocol.McpException("Transport error",
+                new HttpRequestException("Bad gateway", null, System.Net.HttpStatusCode.BadGateway))),
     };
 
     [Theory]

@@ -143,6 +143,14 @@ public partial class SetupWizardWindow : Window
         if (!JiraSignInStep.IsSigningIn) Close(null);
     }
 
+    // Closing with the title bar's X while an Atlassian sign-in waits must not leave its browser-callback
+    // listener running (it would hold the port and could store tokens later without anyone seeing it).
+    protected override void OnClosing(WindowClosingEventArgs e)
+    {
+        base.OnClosing(e);
+        if (!e.Cancel) JiraSignInStep.CancelSignIn();
+    }
+
     // -------------------------------------------------------------------------
     // Done
     // -------------------------------------------------------------------------

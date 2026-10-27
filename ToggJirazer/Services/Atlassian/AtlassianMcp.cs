@@ -123,13 +123,25 @@ public sealed class AtlassianMcp : IAsyncDisposable
         ex is AtlassianAuthException { AbortsSignIn: false }
         || ex is AtlassianToolException tool && ServerStatus(tool) == null;
 
-    /// <summary>The 5xx status of a tool error or HTTP transport error, otherwise <c>null</c>.</summary>
-    private static int? ServerStatus(Exception ex) => ex switch
+    /// <summary>
+    /// The 5xx status of a tool error or HTTP transport error, otherwise <c>null</c>. The whole
+    /// <see cref="Exception.InnerException"/> chain is searched, because the SDK wraps transport failures
+    /// (e.g. an <see cref="HttpRequestException"/> inside an <see cref="McpException"/>).
+    /// </summary>
+    private static int? ServerStatus(Exception ex)
     {
-        AtlassianToolException { StatusCode: >= 500 and < 600 } tool => tool.StatusCode,
-        HttpRequestException { StatusCode: { } code } when (int)code is >= 500 and < 600 => (int)code,
-        _ => null,
-    };
+        for (Exception? current = ex; current != null; current = current.InnerException)
+        {
+            var status = current switch
+            {
+                AtlassianToolException { StatusCode: >= 500 and < 600 } tool => tool.StatusCode,
+                HttpRequestException { StatusCode: { } code } when (int)code is >= 500 and < 600 => (int)code,
+                _ => null,
+            };
+            if (status != null) return status;
+        }
+        return null;
+    }
 
     /// <summary>Signs out: deletes the stored tokens and client registration and drops the cached connection.</summary>
     public async Task SignOutAsync()

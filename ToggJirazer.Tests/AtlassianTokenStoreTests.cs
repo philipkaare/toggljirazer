@@ -78,21 +78,34 @@ public class AtlassianTokenStoreTests : IDisposable
     [WindowsFact]
     public async Task TokenStore_read_retries_while_the_file_is_briefly_locked()
     {
-        var store = new AtlassianTokenStore(FilePath);
-        await store.StoreTokensAsync(SampleTokens(), CancellationToken.None);
+        await new AtlassianTokenStore(FilePath).StoreTokensAsync(SampleTokens(), CancellationToken.None);
 
-        // Another process mid-replace: the file can't be opened for a moment.
+        // Another process mid-replace: the file can't be opened until the first retry wait releases it.
         var exclusive = new FileStream(FilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
-        var release = Task.Run(async () =>
+        var waits = new List<int>();
+        var store = new AtlassianTokenStore(FilePath, readRetries: 3, waitBeforeRetry: attempt =>
         {
-            await Task.Delay(60);
+            waits.Add(attempt);
             exclusive.Dispose();
         });
 
-        var hasTokens = new AtlassianTokenStore(FilePath).HasTokens;
-        await release;
+        var hasTokens = store.HasTokens;
 
         Assert.True(hasTokens);
+        Assert.Equal([0], waits);
+    }
+
+    [WindowsFact]
+    public async Task TokenStore_read_gives_up_after_the_retries_while_the_file_stays_locked()
+    {
+        await new AtlassianTokenStore(FilePath).StoreTokensAsync(SampleTokens(), CancellationToken.None);
+
+        using var exclusive = new FileStream(FilePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        var waits = new List<int>();
+        var store = new AtlassianTokenStore(FilePath, readRetries: 3, waitBeforeRetry: waits.Add);
+
+        Assert.False(store.HasTokens); // still unreadable: counts as "not signed in"
+        Assert.Equal([0, 1, 2], waits);
     }
 
     [Fact]
