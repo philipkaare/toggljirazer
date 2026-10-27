@@ -10,17 +10,25 @@ using Xunit;
 
 namespace ToggJirazer.Tests;
 
-public class MainWindowTests
+public class MainWindowTests : IDisposable
 {
-    private static MainWindow CreateWindow()
-        => new(Path.Combine(Path.GetTempPath(), $"tj-win-{Guid.NewGuid():N}", "appsettings.json"));
+    // Every file a test writes (settings, tokens) lives under this folder, removed after each test.
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), $"tj-win-{Guid.NewGuid():N}");
 
-    private static AtlassianMcp NotSignedInMcp()
-        => new(new AtlassianTokenStore(Path.Combine(Path.GetTempPath(), $"tj-win-{Guid.NewGuid():N}", "atlassian-auth.json")),
+    public void Dispose()
+    {
+        if (Directory.Exists(_dir)) Directory.Delete(_dir, recursive: true);
+    }
+
+    private string NewPath(string fileName) => Path.Combine(_dir, Guid.NewGuid().ToString("N"), fileName);
+
+    private MainWindow CreateWindow() => new(NewPath("appsettings.json"));
+
+    private AtlassianMcp NotSignedInMcp()
+        => new(new AtlassianTokenStore(NewPath("atlassian-auth.json")),
             _ => throw new InvalidOperationException("Tests never open a browser."));
 
-    private static MainWindow CreateWindow(AtlassianMcp mcp)
-        => new(Path.Combine(Path.GetTempPath(), $"tj-win-{Guid.NewGuid():N}", "appsettings.json"), mcp);
+    private MainWindow CreateWindow(AtlassianMcp mcp) => new(NewPath("appsettings.json"), mcp);
 
     [AvaloniaFact]
     public void Jira_tab_round_trips_cloud_id_and_site()
@@ -276,10 +284,11 @@ public class MainWindowTests
     // Setup wizard
     // -------------------------------------------------------------------------
 
-    private static string NewSettingsPath()
+    private string NewSettingsPath()
     {
-        var dir = Directory.CreateDirectory(Path.Combine(Path.GetTempPath(), $"tj-win-{Guid.NewGuid():N}"));
-        return Path.Combine(dir.FullName, "appsettings.json");
+        var path = NewPath("appsettings.json");
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        return path;
     }
 
     [AvaloniaFact]
@@ -370,7 +379,7 @@ public class MainWindowTests
     [Fact]
     public async Task HasStoredSignIn_reflects_the_token_file()
     {
-        var store = new AtlassianTokenStore(Path.Combine(Path.GetTempPath(), $"tj-win-{Guid.NewGuid():N}", "atlassian-auth.json"));
+        var store = new AtlassianTokenStore(NewPath("atlassian-auth.json"));
         await using var mcp = new AtlassianMcp(store, _ => throw new InvalidOperationException("Tests never open a browser."));
         Assert.False(mcp.HasStoredSignIn);
 

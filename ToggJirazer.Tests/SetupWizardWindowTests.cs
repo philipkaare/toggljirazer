@@ -11,8 +11,16 @@ using Xunit;
 
 namespace ToggJirazer.Tests;
 
-public class SetupWizardWindowTests
+public class SetupWizardWindowTests : IDisposable
 {
+    // Token files a test writes live under this folder, removed after each test.
+    private readonly string _dir = Path.Combine(Path.GetTempPath(), $"tj-wiz-{Guid.NewGuid():N}");
+
+    public void Dispose()
+    {
+        if (Directory.Exists(_dir)) Directory.Delete(_dir, recursive: true);
+    }
+
     private const string WrongPassword =
         "Wrong email or password. If you sign in to Toggl with Google, Apple or SSO, use an API token instead.";
 
@@ -32,11 +40,11 @@ public class SetupWizardWindowTests
         };
     }
 
-    private static AtlassianMcp NotSignedInMcp()
-        => new(new AtlassianTokenStore(Path.Combine(Path.GetTempPath(), $"tj-wiz-{Guid.NewGuid():N}", "atlassian-auth.json")),
+    private AtlassianMcp NotSignedInMcp()
+        => new(new AtlassianTokenStore(Path.Combine(_dir, Guid.NewGuid().ToString("N"), "atlassian-auth.json")),
             _ => throw new InvalidOperationException("Tests never open a browser."));
 
-    private static SetupWizardWindow CreateWizard(
+    private SetupWizardWindow CreateWizard(
         AppConfig draft,
         Func<HttpRequestMessage, HttpResponseMessage>? toggl = null,
         Func<IJiraTools, string, Task<IReadOnlyList<string>>>? listFieldNames = null,
