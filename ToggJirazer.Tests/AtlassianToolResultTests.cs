@@ -15,15 +15,25 @@ public class AtlassianToolResultTests
     public void Parse_returns_payload_for_success()
     {
         const string text = """
-            {"issues":{"nodes":[{"id":"10001","key":"ABC-1","fields":{"summary":"First"}}],
-             "pageInfo":{"hasNextPage":false,"endCursor":null}},
-             "context":{"cloudId":"cloud-1"}}
+            {"issues":[{"id":"10001","key":"ABC-1","fields":{"summary":"First"}}],"isLast":true}
             """;
 
         var payload = AtlassianToolResult.Parse(text, isError: false);
 
-        var node = payload.GetProperty("issues").GetProperty("nodes")[0];
-        Assert.Equal("ABC-1", node.GetProperty("key").GetString());
+        Assert.Equal("ABC-1", payload.GetProperty("issues")[0].GetProperty("key").GetString());
+    }
+
+    [Fact]
+    public void Parse_unwraps_the_v2_data_envelope()
+    {
+        // The shape mcp.atlassian.com/v2/mcp wraps every successful result in.
+        const string text = """
+            {"data":{"issues":[{"id":"10001","key":"ABC-1","fields":{"summary":"First"}}],"isLast":true,"appliedContentFormat":"markdown"}}
+            """;
+
+        var payload = AtlassianToolResult.Parse(text, isError: false);
+
+        Assert.Equal("ABC-1", payload.GetProperty("issues")[0].GetProperty("key").GetString());
     }
 
     [Fact]
@@ -80,14 +90,14 @@ public class AtlassianToolResultTests
     public void Sites_are_read_from_the_v2_data_envelope()
     {
         // The shape mcp.atlassian.com/v2/mcp returns: no "name", so it is taken from the site's host.
-        using var doc = JsonDocument.Parse("""
+        const string text = """
             {"data":{"resources":[
               {"cloudId":"cloud-1","url":"https://abc.atlassian.net","products":[{"id":"jira","access":"read-write"}]},
               {"cloudId":"cloud-2","url":"https://def.atlassian.net","name":"Def","products":[]}
             ]}}
-            """);
+            """;
 
-        var sites = AtlassianMcp.ParseSites(doc.RootElement);
+        var sites = AtlassianMcp.ParseSites(AtlassianToolResult.Parse(text, isError: false));
 
         Assert.Equal(
             [new AtlassianSite("cloud-1", "https://abc.atlassian.net", "abc"), new AtlassianSite("cloud-2", "https://def.atlassian.net", "Def")],

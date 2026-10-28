@@ -200,19 +200,15 @@ public sealed class AtlassianMcp : IAsyncDisposable
     }
 
     /// <summary>
-    /// Parses <c>getAccessibleAtlassianResources</c>: the v2 <c>{"data":{"resources":[{cloudId,url,products}]}}</c>
-    /// envelope, or the older bare array of <c>{id,url,name}</c> where the same site appears once per product.
-    /// A site without a name is named after its host's first label (abc.atlassian.net → abc).
+    /// Parses <c>getAccessibleAtlassianResources</c> (its <c>data</c> envelope already unwrapped): the v2
+    /// <c>{"resources":[{cloudId,url,products}]}</c>, or the older bare array of <c>{id,url,name}</c> where the
+    /// same site appears once per product. A site without a name is named after its host's first label
+    /// (abc.atlassian.net → abc).
     /// </summary>
     internal static IReadOnlyList<AtlassianSite> ParseSites(JsonElement resources)
     {
-        if (resources.ValueKind == JsonValueKind.Object
-            && resources.TryGetProperty("data", out var data)
-            && data.ValueKind == JsonValueKind.Object
-            && data.TryGetProperty("resources", out var inner))
-        {
+        if (resources.ValueKind == JsonValueKind.Object && resources.TryGetProperty("resources", out var inner))
             resources = inner;
-        }
 
         if (resources.ValueKind != JsonValueKind.Array)
             throw new AtlassianToolException("Unexpected response from getAccessibleAtlassianResources.", statusCode: null);
