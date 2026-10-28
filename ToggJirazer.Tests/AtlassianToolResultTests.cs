@@ -77,6 +77,24 @@ public class AtlassianToolResultTests
     }
 
     [Fact]
+    public void Sites_are_read_from_the_v2_data_envelope()
+    {
+        // The shape mcp.atlassian.com/v2/mcp returns: no "name", so it is taken from the site's host.
+        using var doc = JsonDocument.Parse("""
+            {"data":{"resources":[
+              {"cloudId":"cloud-1","url":"https://abc.atlassian.net","products":[{"id":"jira","access":"read-write"}]},
+              {"cloudId":"cloud-2","url":"https://def.atlassian.net","name":"Def","products":[]}
+            ]}}
+            """);
+
+        var sites = AtlassianMcp.ParseSites(doc.RootElement);
+
+        Assert.Equal(
+            [new AtlassianSite("cloud-1", "https://abc.atlassian.net", "abc"), new AtlassianSite("cloud-2", "https://def.atlassian.net", "Def")],
+            sites);
+    }
+
+    [Fact]
     public void Transport_429_classifies_as_rate_limit()
     {
         var ex = new HttpRequestException("Too Many Requests", null, HttpStatusCode.TooManyRequests);

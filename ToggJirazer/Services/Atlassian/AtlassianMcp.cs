@@ -199,21 +199,44 @@ public sealed class AtlassianMcp : IAsyncDisposable
         }
     }
 
-    /// <summary>Parses the <c>getAccessibleAtlassianResources</c> array; the same site appears once per product.</summary>
+    /// <summary>
+    /// Parses <c>getAccessibleAtlassianResources</c>: the v2 <c>{"data":{"resources":[{cloudId,url,products}]}}</c>
+    /// envelope, or the older bare array of <c>{id,url,name}</c> where the same site appears once per product.
+    /// A site without a name is named after its host's first label (abc.atlassian.net → abc).
+    /// </summary>
     internal static IReadOnlyList<AtlassianSite> ParseSites(JsonElement resources)
     {
+        if (resources.ValueKind == JsonValueKind.Object
+            && resources.TryGetProperty("data", out var data)
+            && data.ValueKind == JsonValueKind.Object
+            && data.TryGetProperty("resources", out var inner))
+        {
+            resources = inner;
+        }
+
         if (resources.ValueKind != JsonValueKind.Array)
             throw new AtlassianToolException("Unexpected response from getAccessibleAtlassianResources.", statusCode: null);
 
         return resources.EnumerateArray()
-            .Select(r => new AtlassianSite(
-                r.GetProperty("id").GetString() ?? string.Empty,
-                r.TryGetProperty("url", out var url) ? url.GetString() ?? string.Empty : string.Empty,
-                r.TryGetProperty("name", out var name) ? name.GetString() ?? string.Empty : string.Empty))
+            .Select(r =>
+            {
+                var url = ReadString(r, "url");
+                var name = ReadString(r, "name");
+                return new AtlassianSite(
+                    ReadString(r, "cloudId") is { Length: > 0 } cloudId ? cloudId : ReadString(r, "id"),
+                    url,
+                    name.Length > 0 ? name : SiteNameFromUrl(url));
+            })
             .Where(s => s.CloudId.Length > 0)
             .DistinctBy(s => s.CloudId)
             .ToList();
     }
+
+    private static string ReadString(JsonElement obj, string name) =>
+        obj.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString()! : string.Empty;
+
+    private static string SiteNameFromUrl(string url) =>
+        Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.Host.Split('.')[0] : url;
 
     public async ValueTask DisposeAsync()
     {
