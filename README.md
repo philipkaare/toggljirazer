@@ -1,5 +1,5 @@
 # toggljirazer
-A console application to generate reports based on Jira and Toggl Track.
+A desktop app (with a headless mode) that generates reports based on Jira and Toggl Track.
 
 ## Overview
 
@@ -12,8 +12,8 @@ ToggJirazer fetches detailed time entries from the [Toggl Track API](https://dev
 | Issue Type | Jira issue type (e.g. Story, Bug, Task) |
 | Key | Jira issue key (e.g. PROJ-123) |
 | Summary | Jira issue summary |
-| Budget | Budget field from Jira (customfield_10016) |
-| Account | Account field from Jira (customfield_10014) |
+| Budget | Jira budget field (picked in the setup wizard; default name "Budget") |
+| Account | Jira account field (picked in the setup wizard; default name "Account") |
 | Person | Toggl user name |
 | Start Date | Earliest time entry start date for this task/user |
 | Time Used (HH:MM) | Total time spent in HH:MM format |
@@ -46,30 +46,49 @@ The settings file looks like this:
 {
   "Toggl": {
     "ApiToken": "your-toggl-api-token",
+    "OrganizationId": 112233,
     "WorkspaceId": 123456,
     "ProjectId": 789012
   },
   "Jira": {
     "CloudId": "set-by-the-site-dropdown",
-    "SiteUrl": "https://yourcompany.atlassian.net"
+    "SiteUrl": "https://yourcompany.atlassian.net",
+    "BudgetFieldName": "Budget",
+    "AccountFieldName": "Account"
   },
   "Report": {
     "StartDate": "2024-01-01",
     "EndDate": "2024-01-31",
-    "OutputFile": "report.csv",
-    "Format": "csv"
+    "OutputFile": "report.xlsx",
+    "Format": "xlsx"
   }
 }
 ```
 
-- **Toggl:ApiToken** – Found at https://track.toggl.com/profile
+- **Toggl:ApiToken** – Set by signing in on the Toggl tab (see below); you rarely need to
+  edit it by hand. The token is shown at https://track.toggl.com/profile
+- **Toggl:OrganizationId** – The Toggl organization that owns the workspace
 - **Toggl:WorkspaceId** – Found in your Toggl workspace settings URL
 - **Toggl:ProjectId** – The Toggl project ID to report on
 - **Jira:CloudId / SiteUrl** – The Atlassian site to report on. Set them with the Site
   dropdown on the Jira tab (see below) rather than by hand.
+- **Jira:BudgetFieldName / AccountFieldName** – The names of the Jira fields that hold the
+  budget and account; picked in the setup wizard.
 - **Report:StartDate / EndDate** – Optional. Defaults to the current calendar month if not set.
-- **Report:OutputFile** – Output file path (default: `report.csv`)
-- **Report:Format** – Output format: `csv` (default) or `xlsx`
+- **Report:OutputFile** – Output file path (default: `report.xlsx`)
+- **Report:Format** – Output format: `xlsx` (default) or `csv`
+
+## Toggl: Sign in
+
+Open the **Toggl** tab. While you are signed out it shows **Email** and **Password** and a
+**Sign in** button. If you sign in to Toggl with Google, Apple or SSO, click **Use an API
+token instead**: your Toggl profile opens in the browser, and you paste the token and click
+**Check token**.
+
+Once signed in, the tab shows **Signed in as** *your name* and a **Sign out** button. Signing
+in or out saves the settings immediately; only the API token is stored, never your
+password. The saved token is checked when the app starts; if Toggl can't be reached, the
+token is kept and the status line says why.
 
 ## Jira: Sign in with Atlassian
 
@@ -93,6 +112,20 @@ If sign-in shows a blocked consent screen, ask your Atlassian organization admin
 ## How It Works
 
 Time entry descriptions in Toggl must begin with a Jira issue key (e.g. `PROJ-123 - some work done`). The application extracts the key from each entry and looks it up in Jira to enrich the report.
+
+## Report sheets (xlsx)
+
+Each run rewrites the sheets the report generates: **Rapport** (or one sheet per month,
+e.g. `March 2026`, when the period spans several months), **Versionsrapport**,
+**Opsummering**, **Intet budget** (only when there is time without a budget) and **Plan**.
+Values you typed into the generated sheets are kept where the report knows them: extra
+columns on Versionsrapport, *Budget pr. år* on Opsummering, and the week and extra columns
+on Plan.
+
+Any other sheet you add to the file is kept as it is and placed after the generated
+sheets. Don't give your own sheets one of the names above, or a month name like
+`May 2026`, or they will be replaced. Cell values, formatting and formulas are kept;
+charts and pictures in your own sheets may not survive a run.
 
 ## Building & Running
 
