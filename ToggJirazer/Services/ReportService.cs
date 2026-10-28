@@ -560,6 +560,8 @@ public class ReportService
     /// according to the user's locale. Sums are appended at the bottom of numeric columns.
     /// When <paramref name="extraColumns"/> is provided, any extra version-report columns are
     /// appended after the standard columns and their values are merged by version name.
+    /// Sheets in an existing file that the report doesn't generate (the user's own sheets) are
+    /// copied over unchanged, after the generated ones.
     /// </summary>
     public void WriteXlsx(
         List<(string SheetName, List<ReportRow> Rows)> reportSheets,
@@ -642,8 +644,52 @@ public class ReportService
         // Plan sheet
         WritePlanSheet(workbook, leverances, existingWeekData, extraPlanHeaders, extraPlanData);
 
+        CopyUserSheets(outputPath, workbook);
+
         workbook.SaveAs(outputPath);
         Console.WriteLine($"Report written to: {Path.GetFullPath(outputPath)}");
+    }
+
+    /// <summary>
+    /// Whether a sheet name is one the report generates: "Rapport", a month sheet ("MMMM yyyy"),
+    /// "Versionsrapport" (or the legacy "Version Report"), "Opsummering", "Intet budget" or "Plan".
+    /// Generated sheets are rewritten on every run; any other sheet belongs to the user.
+    /// </summary>
+    internal static bool IsGeneratedSheetName(string name) =>
+        GeneratedSheetNames.Contains(name)
+        || DateTime.TryParseExact(name, "MMMM yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out _);
+
+    private static readonly HashSet<string> GeneratedSheetNames = new(
+        ["Rapport", "Versionsrapport", "Version Report", "Opsummering", "Intet budget", "Plan"],
+        StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Copies the sheets of the existing file at <paramref name="path"/> that the report doesn't generate into
+    /// <paramref name="workbook"/>, in their original order. A sheet that can't be copied is skipped with a warning.
+    /// </summary>
+    private static void CopyUserSheets(string path, XLWorkbook workbook)
+    {
+        if (!File.Exists(path)) return;
+
+        try
+        {
+            using var existing = new XLWorkbook(path);
+            foreach (var sheet in existing.Worksheets.Where(ws => !IsGeneratedSheetName(ws.Name)))
+            {
+                try
+                {
+                    sheet.CopyTo(workbook, sheet.Name);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"Warning: Could not keep sheet '{sheet.Name}': {ex.Message}");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Warning: Could not read existing sheets from '{path}': {ex.Message}");
+        }
     }
 
     /// <summary>

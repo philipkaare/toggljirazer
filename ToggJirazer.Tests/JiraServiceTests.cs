@@ -15,10 +15,16 @@ public class JiraServiceTests
     private const string AccountId = "customfield_10111";
     private const string Search = "searchJiraIssuesUsingJql";
     private const string GetIssue = "getJiraIssue";
+    private const string ExecuteRead = "executeRead";
+    private const string FieldMetaOperation = "getJiraIssueTypeMetaWithFields";
 
     private static readonly JiraConfig Config = new() { CloudId = "cloud-1", BudgetFieldName = "Budget", AccountFieldName = "Account" };
 
-    // ---- Fixtures in the shapes the Atlassian MCP server returns ----
+    // ---- Fixtures in the shapes the Atlassian MCP server (v2) returns, after its "data" envelope is unwrapped ----
+
+    private static string TypeId(string type) => "type-" + type;
+
+    private static string TypeName(string typeId) => typeId["type-".Length..];
 
     private static JsonObject Issue(
         string key,
@@ -43,17 +49,27 @@ public class JiraServiceTests
             });
         }
 
+        // Custom fields come keyed by label with their ID; an empty one has no "value"; null system fields are left out.
+        var customFields = new JsonObject
+        {
+            ["Budget"] = budgetOption is null
+                ? new JsonObject { ["id"] = BudgetId }
+                : new JsonObject { ["id"] = BudgetId, ["value"] = new JsonObject { ["value"] = budgetOption, ["id"] = "10177" } },
+            ["Account"] = account is null
+                ? new JsonObject { ["id"] = AccountId }
+                : new JsonObject { ["id"] = AccountId, ["value"] = new JsonArray(account) },
+        };
         var fields = new JsonObject
         {
             ["summary"] = $"Summary of {key}",
-            ["issuetype"] = new JsonObject { ["name"] = type, ["subtask"] = false },
+            ["issuetype"] = new JsonObject { ["id"] = TypeId(type), ["name"] = type, ["subtask"] = false, ["hierarchyLevel"] = 0 },
             ["fixVersions"] = versions,
-            ["timeoriginalestimate"] = estimateSeconds is { } s ? JsonValue.Create(s) : null,
-            [BudgetId] = budgetOption is null ? null : new JsonObject { ["self"] = "https://example.atlassian.net/rest/api/3/customFieldOption/1", ["value"] = budgetOption, ["id"] = "1" },
-            [AccountId] = account is null ? null : new JsonObject { ["self"] = "https://example.atlassian.net/rest/api/3/customFieldOption/2", ["value"] = account, ["id"] = "2" },
+            ["customFields"] = customFields,
         };
+        if (estimateSeconds is { } s)
+            fields["timeoriginalestimate"] = s;
         if (parentKey != null)
-            fields["parent"] = new JsonObject { ["id"] = "99", ["key"] = parentKey };
+            fields["parent"] = new JsonObject { ["id"] = "99", ["key"] = parentKey, ["fields"] = new JsonObject { ["summary"] = "Parent" } };
 
         return new JsonObject { ["id"] = "10" + key.GetHashCode() % 1000, ["key"] = key, ["fields"] = fields };
     }
@@ -62,26 +78,29 @@ public class JiraServiceTests
     {
         var array = new JsonArray();
         foreach (var node in nodes) array.Add(node.DeepClone());
-        var root = new JsonObject
-        {
-            ["issues"] = new JsonObject
-            {
-                ["nodes"] = array,
-                ["pageInfo"] = new JsonObject { ["hasNextPage"] = nextCursor != null, ["endCursor"] = nextCursor },
-                ["webUrl"] = "https://example.atlassian.net/issues",
-            },
-            ["context"] = new JsonObject(),
-        };
+        var root = new JsonObject { ["issues"] = array, ["isLast"] = nextCursor == null, ["appliedContentFormat"] = "markdown" };
+        if (nextCursor != null) root["nextPageToken"] = nextCursor;
         return JsonSerializer.SerializeToElement(root);
     }
 
-    private static JsonElement NamesResponse(JsonObject issue, Dictionary<string, string> names)
+    private static JsonElement Single(JsonObject issue) => JsonSerializer.SerializeToElement(issue);
+
+    /// <summary>The <c>getJiraIssueTypeMetaWithFields</c> result: every field of a project's issue type.</summary>
+    private static JsonElement FieldMeta(Dictionary<string, string> names)
     {
-        var node = (JsonObject)issue.DeepClone();
-        var namesObj = new JsonObject();
-        foreach (var kv in names) namesObj[kv.Key] = kv.Value;
-        node["names"] = namesObj;
-        return Page([node]);
+        var fields = new JsonArray();
+        foreach (var kv in names)
+            fields.Add(new JsonObject { ["fieldId"] = kv.Key, ["name"] = kv.Value, ["required"] = false, ["schema"] = new JsonObject { ["type"] = "string" } });
+        return JsonSerializer.SerializeToElement(new JsonObject { ["total"] = names.Count, ["startAt"] = 0, ["maxResults"] = 200, ["fields"] = fields });
+    }
+
+    private static (string Project, string IssueTypeId) MetaTarget(IReadOnlyDictionary<string, object?> args)
+    {
+        Assert.Equal(FieldMetaOperation, args["name"]);
+        var inputs = (IReadOnlyDictionary<string, object?>)args["inputs"]!;
+        Assert.Equal("cloud-1", inputs["cloudId"]);
+        Assert.Equal(false, inputs["requiredFieldsOnly"]);
+        return ((string)inputs["projectIdOrKey"]!, (string)inputs["issueTypeId"]!);
     }
 
     private static readonly Dictionary<string, string> AllNames = new()
@@ -107,8 +126,11 @@ public class JiraServiceTests
 
     private static IEnumerable<string> Fields(IReadOnlyDictionary<string, object?> args) => (IEnumerable<string>)args["fields"]!;
 
-    /// <summary>A fake Jira backed by a set of issues: answers getJiraIssue with names, and key/fixVersion JQL in one page.</summary>
-    private static FakeJiraTools Backed(IEnumerable<JsonObject> issues, Func<string, Dictionary<string, string>>? namesForKey = null)
+    /// <summary>
+    /// A fake Jira backed by a set of issues: answers getJiraIssue, the field metadata of a project's issue type
+    /// (<paramref name="namesFor"/>(project, issue type), all names by default), and key/fixVersion JQL in one page.
+    /// </summary>
+    private static FakeJiraTools Backed(IEnumerable<JsonObject> issues, Func<string, string, Dictionary<string, string>>? namesFor = null)
     {
         var store = issues.ToDictionary(i => (string)i["key"]!, StringComparer.OrdinalIgnoreCase);
         return new FakeJiraTools((tool, args) =>
@@ -117,8 +139,14 @@ public class JiraServiceTests
             {
                 var key = (string)args["issueIdOrKey"]!;
                 if (!store.TryGetValue(key, out var issue))
-                    throw new AtlassianToolException($"Issue does not exist or you do not have permission to see it.", 404);
-                return NamesResponse(issue, namesForKey?.Invoke(key) ?? AllNames);
+                    throw new AtlassianToolException($"Issue \"{key}\" not found", 404);
+                return Single(issue);
+            }
+
+            if (tool == ExecuteRead)
+            {
+                var (project, typeId) = MetaTarget(args);
+                return FieldMeta(namesFor?.Invoke(project, TypeName(typeId)) ?? AllNames);
             }
 
             var jql = Jql(args);
@@ -143,7 +171,7 @@ public class JiraServiceTests
     // ---- Tests ----
 
     [Fact]
-    public async Task Field_ids_resolve_from_names_map()
+    public async Task Field_ids_resolve_from_issue_type_metadata()
     {
         var tools = Backed([Issue("ABC-1", budgetOption: "Fondsdrift", account: "Kunde A")]);
         var service = new JiraService(Config, tools);
@@ -153,9 +181,10 @@ public class JiraServiceTests
         var getCall = Assert.Single(tools.CallsTo(GetIssue)).Args;
         Assert.Equal("cloud-1", getCall["cloudId"]);
         Assert.Equal("ABC-1", getCall["issueIdOrKey"]);
-        Assert.Equal(["*all"], Fields(getCall));
-        Assert.Equal("names", getCall["expand"]);
-        Assert.Equal("adf", getCall["responseContentFormat"]);
+        Assert.Equal(["issuetype"], Fields(getCall));
+        Assert.Equal("full", getCall["view"]);
+
+        Assert.Equal(("ABC", TypeId("Task")), MetaTarget(Assert.Single(tools.CallsTo(ExecuteRead)).Args));
 
         var searchCall = Assert.Single(tools.CallsTo(Search)).Args;
         Assert.Contains(BudgetId, Fields(searchCall));
@@ -166,11 +195,39 @@ public class JiraServiceTests
     }
 
     [Fact]
+    public async Task Custom_field_values_are_read_by_id_whatever_their_label()
+    {
+        // The site shows the Account field as "Konto": the value is still found by its ID.
+        var issue = Issue("ABC-1", account: "Kunde A");
+        var custom = (JsonObject)issue["fields"]!["customFields"]!;
+        var account = custom["Account"]!.DeepClone();
+        custom.Remove("Account");
+        custom["Konto"] = account;
+        var tools = Backed([issue]);
+
+        var result = await new JiraService(Config, tools).GetIssuesBulkAsync(["ABC-1"]);
+
+        Assert.Equal("Kunde A", result["ABC-1"]!.Account);
+    }
+
+    [Fact]
+    public async Task Field_ids_are_read_once_per_project_and_issue_type()
+    {
+        var tools = Backed([Issue("ABC-1"), Issue("ABC-2")], (_, _) => new() { [AccountId] = "Account" });
+        var service = new JiraService(Config, tools);
+
+        await service.GetIssuesBulkAsync(["ABC-1", "ABC-2"]);
+
+        Assert.Equal(2, tools.CallsTo(GetIssue).Count());
+        Assert.Single(tools.CallsTo(ExecuteRead));
+    }
+
+    [Fact]
     public async Task Field_ids_try_next_project_when_missing()
     {
         var tools = Backed(
             [Issue("ABC-1"), Issue("ABC-2"), Issue("XYZ-1", budgetOption: "Drift")],
-            key => key.StartsWith("ABC") ? new() { [AccountId] = "Account" } : AllNames);
+            (project, _) => project == "ABC" ? new() { [AccountId] = "Account" } : AllNames);
         var service = new JiraService(Config, tools);
 
         var result = await service.GetIssuesBulkAsync(["ABC-1", "ABC-2", "XYZ-1"]);
@@ -178,7 +235,7 @@ public class JiraServiceTests
         // The first key of each project is tried before a second key of any project.
         var getCalls = tools.CallsTo(GetIssue).Select(c => c.Args["issueIdOrKey"]).ToList();
         Assert.Equal(["ABC-1", "XYZ-1"], getCalls);
-        Assert.True(tools.Calls.Count <= 5, $"Expected at most 5 calls, got {tools.Calls.Count}");
+        Assert.Equal(2, tools.CallsTo(ExecuteRead).Count());
         Assert.Equal("Drift", result["XYZ-1"]!.Budget);
     }
 
@@ -189,7 +246,7 @@ public class JiraServiceTests
         var abcKeys = Enumerable.Range(1, 6).Select(n => $"ABC-{n}").ToList();
         var tools = Backed(
             abcKeys.Select(k => Issue(k)).Append(Issue("XYZ-1", budgetOption: "Drift")),
-            key => key.StartsWith("ABC") ? new() { [AccountId] = "Account" } : AllNames);
+            (project, _) => project == "ABC" ? new() { [AccountId] = "Account" } : AllNames);
         var service = new JiraService(Config, tools);
 
         var result = await service.GetIssuesBulkAsync([.. abcKeys, "XYZ-1"]);
@@ -220,7 +277,7 @@ public class JiraServiceTests
     public async Task Field_id_probes_stop_at_five_calls()
     {
         var keys = Enumerable.Range(1, 8).Select(n => $"ABC-{n}").ToList();
-        var tools = Backed(keys.Select(k => Issue(k)), _ => new() { [AccountId] = "Account" });
+        var tools = Backed(keys.Select(k => Issue(k)), (_, _) => new() { [AccountId] = "Account" });
         var service = new JiraService(Config, tools);
 
         await service.GetIssuesBulkAsync(keys);
@@ -248,10 +305,10 @@ public class JiraServiceTests
     [Fact]
     public async Task Field_ids_keep_probing_the_same_project_when_a_field_is_still_missing()
     {
-        // ABC-1's issue type has no Budget field on its screen; ABC-2's has.
+        // ABC-1's issue type (Task) has no Budget field on its screen; ABC-2's (Epic) has.
         var tools = Backed(
-            [Issue("ABC-1"), Issue("ABC-2", budgetOption: "Fondsdrift")],
-            key => key == "ABC-1" ? new() { [AccountId] = "Account" } : AllNames);
+            [Issue("ABC-1"), Issue("ABC-2", type: "Epic", budgetOption: "Fondsdrift")],
+            (_, type) => type == "Task" ? new() { [AccountId] = "Account" } : AllNames);
         var service = new JiraService(Config, tools);
 
         var result = await service.GetIssuesBulkAsync(["ABC-1", "ABC-2"]);
@@ -270,7 +327,8 @@ public class JiraServiceTests
     {
         var tools = new FakeJiraTools((tool, args) =>
         {
-            if (tool == GetIssue) return NamesResponse(Issue("ABC-1"), AllNames);
+            if (tool == GetIssue) return Single(Issue("ABC-1"));
+            if (tool == ExecuteRead) return FieldMeta(AllNames);
             throw new AtlassianToolException(message, status);
         });
         var service = new JiraService(Config, tools);
@@ -287,7 +345,8 @@ public class JiraServiceTests
     {
         var tools = new FakeJiraTools((tool, args) =>
         {
-            if (tool == GetIssue) return NamesResponse(Issue("ABC-1"), AllNames);
+            if (tool == GetIssue) return Single(Issue("ABC-1"));
+            if (tool == ExecuteRead) return FieldMeta(AllNames);
             throw new AtlassianRateLimitException();
         });
         var service = new JiraService(Config, tools);
@@ -338,7 +397,8 @@ public class JiraServiceTests
         var store = keys.ToDictionary(k => k, k => Issue(k));
         var tools = new FakeJiraTools((tool, args) =>
         {
-            if (tool == GetIssue) return NamesResponse(store["ABC-1"], AllNames);
+            if (tool == GetIssue) return Single(store["ABC-1"]);
+            if (tool == ExecuteRead) return FieldMeta(AllNames);
             var requested = KeysIn(Jql(args));
             if (requested.Contains("ABC-3")) throw new AtlassianToolException("Something went wrong.", 400);
             return Page(requested.Select(k => store[k]));
@@ -359,7 +419,8 @@ public class JiraServiceTests
         var keys = Enumerable.Range(1, 10).Select(n => $"ABC-{n}").ToList();
         var tools = new FakeJiraTools((tool, args) =>
         {
-            if (tool == GetIssue) return NamesResponse(Issue("ABC-1"), AllNames);
+            if (tool == GetIssue) return Single(Issue("ABC-1"));
+            if (tool == ExecuteRead) return FieldMeta(AllNames);
             throw new AtlassianToolException("Something went wrong.", 400);
         });
         var service = new JiraService(Config, tools);
@@ -421,7 +482,8 @@ public class JiraServiceTests
     {
         var tools = new FakeJiraTools((tool, args) =>
         {
-            if (tool == GetIssue) return NamesResponse(Issue("ABC-1"), AllNames);
+            if (tool == GetIssue) return Single(Issue("ABC-1"));
+            if (tool == ExecuteRead) return FieldMeta(AllNames);
             throw new AtlassianAuthException("Your Atlassian sign-in is no longer valid.");
         });
         var service = new JiraService(Config, tools);
@@ -442,24 +504,28 @@ public class JiraServiceTests
             service.GetFixVersionsWithRecentlyUpdatedIssuesAsync(["v1"], new DateTime(2026, 1, 1)));
     }
 
-    private static FakeJiraTools FieldListing(params (string Key, Dictionary<string, string> Names)[] recent) =>
+    /// <summary>Recent issues for the field listing; the field metadata of each issue's project and type is its names.</summary>
+    private static FakeJiraTools FieldListing(params (string Key, string Type, Dictionary<string, string> Names)[] recent) =>
         new((tool, args) =>
         {
-            if (tool == GetIssue)
+            if (tool == ExecuteRead)
             {
-                var key = (string)args["issueIdOrKey"]!;
-                return NamesResponse(Issue(key), recent.First(r => r.Key == key).Names);
+                var (project, typeId) = MetaTarget(args);
+                return FieldMeta(recent.First(r => r.Key.StartsWith(project + "-") && r.Type == TypeName(typeId)).Names);
             }
-            return Page(recent.Select(r => Issue(r.Key)));
+            return Page(recent.Select(r => Issue(r.Key, type: r.Type)));
         });
+
+    private static IEnumerable<(string Project, string IssueTypeId)> MetaTargets(FakeJiraTools tools) =>
+        tools.CallsTo(ExecuteRead).Select(c => MetaTarget(c.Args));
 
     [Fact]
     public async Task ListFieldNames_merges_names_across_projects()
     {
         var tools = FieldListing(
-            ("ABC-1", new() { ["summary"] = "Summary", [BudgetId] = "Budget" }),
-            ("ABC-2", new() { ["summary"] = "Summary" }),
-            ("XYZ-1", new() { ["summary"] = "Summary", [AccountId] = "account" }));
+            ("ABC-1", "Task", new() { ["summary"] = "Summary", [BudgetId] = "Budget" }),
+            ("ABC-2", "Task", new() { ["summary"] = "Summary" }),
+            ("XYZ-1", "Task", new() { ["summary"] = "Summary", [AccountId] = "account" }));
         var service = new JiraService(Config, tools);
 
         var fields = await service.ListFieldNamesAsync();
@@ -467,40 +533,53 @@ public class JiraServiceTests
         Assert.Equal(
             [(AccountId, "account"), (BudgetId, "Budget"), ("summary", "Summary")],
             fields.ToArray());
-        var getCalls = tools.CallsTo(GetIssue).ToList();
-        Assert.Equal(["ABC-1", "XYZ-1"], getCalls.Select(c => (string)c.Args["issueIdOrKey"]!));
-        Assert.Equal(["*all"], Fields(getCalls[0].Args));
-        Assert.Equal("names", getCalls[0].Args["expand"]);
+        Assert.Equal([("ABC", TypeId("Task")), ("XYZ", TypeId("Task"))], MetaTargets(tools));
+        Assert.Empty(tools.CallsTo(GetIssue));
+    }
+
+    [Fact]
+    public async Task ListFieldNames_merges_names_across_issue_types()
+    {
+        // Budget is only on the Epic screen.
+        var tools = FieldListing(
+            ("ABC-1", "Task", new() { ["summary"] = "Summary" }),
+            ("ABC-2", "Epic", new() { ["summary"] = "Summary", [BudgetId] = "Budget" }));
+
+        var fields = await new JiraService(Config, tools).ListFieldNamesAsync();
+
+        Assert.Equal([(BudgetId, "Budget"), ("summary", "Summary")], fields.ToArray());
+        Assert.Equal([("ABC", TypeId("Task")), ("ABC", TypeId("Epic"))], MetaTargets(tools));
     }
 
     [Fact]
     public async Task ListFieldNames_jql_is_bounded()
     {
-        var tools = FieldListing(("ABC-1", AllNames));
+        var tools = FieldListing(("ABC-1", "Task", AllNames));
 
         await new JiraService(Config, tools).ListFieldNamesAsync();
 
         var search = Assert.Single(tools.CallsTo(Search)).Args;
         Assert.Contains("updated >=", Jql(search));
         Assert.Equal(50, search["maxResults"]);
-        Assert.Equal(["key"], Fields(search));
+        Assert.Equal(["issuetype"], Fields(search));
+        Assert.Equal("full", search["view"]);
     }
 
     [Fact]
-    public async Task ListFieldNames_reads_at_most_five_projects()
+    public async Task ListFieldNames_reads_at_most_five_issue_types_trying_every_project_first()
     {
         var tools = FieldListing(
-            ("AAA-1", new() { ["summary"] = "Summary" }),
-            ("BBB-1", new() { ["summary"] = "Summary" }),
-            ("CCC-1", new() { ["summary"] = "Summary" }),
-            ("DDD-1", new() { ["summary"] = "Summary" }),
-            ("EEE-1", new() { ["summary"] = "Summary" }),
-            ("FFF-1", new() { [BudgetId] = "Budget" }));
+            ("AAA-1", "Task", new() { ["summary"] = "Summary" }),
+            ("AAA-2", "Epic", new() { ["summary"] = "Summary" }),
+            ("BBB-1", "Task", new() { ["summary"] = "Summary" }),
+            ("CCC-1", "Task", new() { ["summary"] = "Summary" }),
+            ("DDD-1", "Task", new() { ["summary"] = "Summary" }),
+            ("EEE-1", "Task", new() { ["summary"] = "Summary" }),
+            ("FFF-1", "Task", new() { [BudgetId] = "Budget" }));
 
         var fields = await new JiraService(Config, tools).ListFieldNamesAsync();
 
-        Assert.Equal(["AAA-1", "BBB-1", "CCC-1", "DDD-1", "EEE-1"],
-            tools.CallsTo(GetIssue).Select(c => (string)c.Args["issueIdOrKey"]!));
+        Assert.Equal(["AAA", "BBB", "CCC", "DDD", "EEE"], MetaTargets(tools).Select(t => t.Project));
         Assert.Equal([("summary", "Summary")], fields.ToArray());
     }
 
@@ -512,7 +591,7 @@ public class JiraServiceTests
         var fields = await new JiraService(Config, tools).ListFieldNamesAsync();
 
         Assert.Empty(fields);
-        Assert.Empty(tools.CallsTo(GetIssue));
+        Assert.Empty(tools.CallsTo(ExecuteRead));
     }
 
     [Fact]
@@ -549,6 +628,7 @@ public class JiraServiceTests
         await new JiraService(config, tools).GetIssuesBulkAsync(["ABC-1"]);
 
         Assert.Empty(tools.CallsTo(GetIssue));
+        Assert.Empty(tools.CallsTo(ExecuteRead));
     }
 
     [Fact]
@@ -581,7 +661,8 @@ public class JiraServiceTests
             var jql = Jql(s.Args);
             Assert.True(jql.Contains("key in (") || jql.Contains("fixVersion") || jql.Contains("updated >="), $"Unbounded JQL: {jql}");
             Assert.Equal("cloud-1", s.Args["cloudId"]);
-            Assert.Equal("adf", s.Args["responseContentFormat"]);
+            Assert.Equal("full", s.Args["view"]);
+            Assert.False(s.Args.ContainsKey("responseContentFormat"));
         });
     }
 }

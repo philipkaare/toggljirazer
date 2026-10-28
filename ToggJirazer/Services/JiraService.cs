@@ -15,7 +15,11 @@ public class JiraService
 {
     private const string SearchTool = "searchJiraIssuesUsingJql";
     private const string GetIssueTool = "getJiraIssue";
-    private const string ContentFormat = "adf";
+    private const string ExecuteReadTool = "executeRead";
+    private const string FieldMetaOperation = "getJiraIssueTypeMetaWithFields";
+    // The "full" view returns the requested fields in the Jira REST shape; the default view drops fixVersions and parent.
+    private const string View = "full";
+    private const int FieldMetaPageSize = 200;
     private const int KeyChunkSize = 100;
     private const int VersionBatchSize = 50;
     private const int PageSize = 100;
@@ -42,8 +46,8 @@ public class JiraService
     /// <summary>
     /// Finds the Budget and Account custom field IDs by name, once per service instance. Tries the keys in
     /// <paramref name="candidateKeys"/> round-robin across projects (at most <see cref="MaxFieldIdLookups"/>
-    /// <c>getJiraIssue</c> calls in total), stopping as soon as both are found.
-    /// Does nothing when there is no candidate key yet.
+    /// <c>getJiraIssue</c> calls in total), reading the field metadata of each new project and issue type,
+    /// and stops as soon as both are found. Does nothing when there is no candidate key yet.
     /// </summary>
     private async Task ResolveFieldIdsAsync(IEnumerable<string> candidateKeys)
     {
@@ -72,6 +76,7 @@ public class JiraService
 
         _fieldIdsResolved = true;
         var lookups = 0;
+        var readTypes = new HashSet<(string Project, string IssueTypeId)>();
         // A key that can't be read (deleted, mistyped) and a readable key whose fields lack a wanted
         // field (e.g. another issue type) both move on to the next key. Any other tool error (5xx,
         // non-JSON, permission) propagates and stops the run rather than leaving the fields blank.
@@ -88,9 +93,8 @@ public class JiraService
                 {
                     ["cloudId"] = _config.CloudId,
                     ["issueIdOrKey"] = key,
-                    ["fields"] = new[] { "*all" },
-                    ["expand"] = "names",
-                    ["responseContentFormat"] = ContentFormat,
+                    ["fields"] = new[] { "issuetype" },
+                    ["view"] = View,
                 });
             }
             catch (AtlassianToolException ex) when (IsKeyRejection(ex))
@@ -98,7 +102,11 @@ public class JiraService
                 continue;
             }
 
-            var names = ReadFieldNames(root);
+            // Issues leave out empty custom fields, so the names come from the issue type's field metadata.
+            var issueTypeId = IssueTypeIdOf(root);
+            if (issueTypeId == null || !readTypes.Add((ProjectOf(key), issueTypeId))) continue;
+
+            var names = await ReadFieldMetaAsync(ProjectOf(key), issueTypeId, CancellationToken.None);
             if (wantBudget)
                 _budgetFieldId ??= names.FirstOrDefault(n =>
                     string.Equals(n.Name, _config.BudgetFieldName, StringComparison.OrdinalIgnoreCase)).Id;
@@ -115,9 +123,9 @@ public class JiraService
 
     /// <summary>
     /// Lists the Jira field IDs and display names of the site, for the setup wizard. Looks at the issues
-    /// updated in the last 90 days, reads the field names of the first issue of each of up to
-    /// <see cref="MaxFieldIdLookups"/> projects, and merges them (distinct by ID, sorted by name).
-    /// Empty when there are no recent issues.
+    /// updated in the last 90 days, reads the field metadata of up to <see cref="MaxFieldIdLookups"/> of
+    /// their project and issue type pairs (round-robin across projects), and merges them (distinct by ID,
+    /// sorted by name). Empty when there are no recent issues.
     /// </summary>
     public async Task<IReadOnlyList<(string Id, string Name)>> ListFieldNamesAsync(CancellationToken ct = default)
     {
@@ -125,32 +133,28 @@ public class JiraService
         {
             ["cloudId"] = _config.CloudId,
             ["jql"] = "updated >= -90d order by updated desc",
-            ["fields"] = new[] { "key" },
+            ["fields"] = new[] { "issuetype" },
             ["maxResults"] = 50,
-            ["responseContentFormat"] = ContentFormat,
+            ["view"] = View,
         }, ct);
 
-        var keys = IssueNodes(search)
-            .Select(n => n.TryGetProperty("key", out var k) && k.ValueKind == JsonValueKind.String ? k.GetString() : null)
-            .Where(k => !string.IsNullOrWhiteSpace(k))
-            .Select(k => k!)
-            .GroupBy(ProjectOf, StringComparer.OrdinalIgnoreCase)
-            .Select(g => g.First())
+        var types = IssueNodes(search)
+            .Select(n => (Key: n.TryGetProperty("key", out var k) && k.ValueKind == JsonValueKind.String ? k.GetString() : null,
+                          IssueTypeId: IssueTypeIdOf(n)))
+            .Where(n => !string.IsNullOrWhiteSpace(n.Key) && n.IssueTypeId != null)
+            .Select(n => (Project: ProjectOf(n.Key!), IssueTypeId: n.IssueTypeId!))
+            .Distinct()
+            .GroupBy(t => t.Project, StringComparer.OrdinalIgnoreCase)
+            .SelectMany(g => g.Select((type, rank) => (type, rank)))
+            .OrderBy(x => x.rank) // stable: keeps project order within a rank
+            .Select(x => x.type)
             .Take(MaxFieldIdLookups)
             .ToList();
 
         var merged = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var key in keys)
+        foreach (var (project, issueTypeId) in types)
         {
-            var root = await _tools.CallToolAsync(GetIssueTool, new Dictionary<string, object?>
-            {
-                ["cloudId"] = _config.CloudId,
-                ["issueIdOrKey"] = key,
-                ["fields"] = new[] { "*all" },
-                ["expand"] = "names",
-                ["responseContentFormat"] = ContentFormat,
-            }, ct);
-            foreach (var (id, name) in ReadFieldNames(root))
+            foreach (var (id, name) in await ReadFieldMetaAsync(project, issueTypeId, ct))
                 merged.TryAdd(id, name);
         }
 
@@ -166,31 +170,71 @@ public class JiraService
         return dash > 0 ? issueKey[..dash] : issueKey;
     }
 
-    /// <summary>Reads the field ID → display name map that <c>expand: "names"</c> adds to each issue node.</summary>
-    private static List<(string Id, string Name)> ReadFieldNames(JsonElement root)
+    /// <summary>
+    /// Reads every field (ID and display name) of a project's issue type with <c>getJiraIssueTypeMetaWithFields</c>,
+    /// through all its pages.
+    /// </summary>
+    private async Task<List<(string Id, string Name)>> ReadFieldMetaAsync(string project, string issueTypeId, CancellationToken ct)
     {
         var result = new List<(string Id, string Name)>();
-        foreach (var node in IssueNodes(root))
+        var startAt = 0;
+        while (true)
         {
-            if (!node.TryGetProperty("names", out var names) || names.ValueKind != JsonValueKind.Object) continue;
-            foreach (var property in names.EnumerateObject())
+            var root = await _tools.CallToolAsync(ExecuteReadTool, new Dictionary<string, object?>
             {
-                if (property.Value.ValueKind == JsonValueKind.String)
-                    result.Add((property.Name, property.Value.GetString()!));
+                ["cloudId"] = _config.CloudId,
+                ["name"] = FieldMetaOperation,
+                ["inputs"] = new Dictionary<string, object?>
+                {
+                    ["cloudId"] = _config.CloudId,
+                    ["projectIdOrKey"] = project,
+                    ["issueTypeId"] = issueTypeId,
+                    ["requiredFieldsOnly"] = false,
+                    ["startAt"] = startAt,
+                    ["maxResults"] = FieldMetaPageSize,
+                },
+            }, ct);
+
+            if (root.ValueKind != JsonValueKind.Object
+                || !root.TryGetProperty("fields", out var fields)
+                || fields.ValueKind != JsonValueKind.Array)
+            {
+                return result;
             }
+
+            var count = 0;
+            foreach (var field in fields.EnumerateArray())
+            {
+                count++;
+                if (field.TryGetProperty("fieldId", out var id) && id.ValueKind == JsonValueKind.String
+                    && field.TryGetProperty("name", out var name) && name.ValueKind == JsonValueKind.String)
+                {
+                    result.Add((id.GetString()!, name.GetString()!));
+                }
+            }
+
+            startAt += count;
+            var total = root.TryGetProperty("total", out var t) && t.TryGetInt32(out var n) ? n : 0;
+            if (count == 0 || startAt >= total) return result;
         }
-        return result;
     }
+
+    /// <summary>The issue type ID of an issue node, or null when the node has none.</summary>
+    private static string? IssueTypeIdOf(JsonElement issue) =>
+        issue.ValueKind == JsonValueKind.Object
+        && issue.TryGetProperty("fields", out var fields) && fields.ValueKind == JsonValueKind.Object
+        && fields.TryGetProperty("issuetype", out var type) && type.ValueKind == JsonValueKind.Object
+        && type.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String
+            ? id.GetString()
+            : null;
 
     private static IEnumerable<JsonElement> IssueNodes(JsonElement root)
     {
         if (root.ValueKind == JsonValueKind.Object
             && root.TryGetProperty("issues", out var issues)
-            && issues.ValueKind == JsonValueKind.Object
-            && issues.TryGetProperty("nodes", out var nodes)
-            && nodes.ValueKind == JsonValueKind.Array)
+            && issues.ValueKind == JsonValueKind.Array)
         {
-            return nodes.EnumerateArray();
+            return issues.EnumerateArray();
         }
         return [];
     }
@@ -198,17 +242,12 @@ public class JiraService
     private static string? NextPageToken(JsonElement root)
     {
         if (root.ValueKind == JsonValueKind.Object
-            && root.TryGetProperty("issues", out var issues)
-            && issues.ValueKind == JsonValueKind.Object
-            && issues.TryGetProperty("pageInfo", out var pageInfo)
-            && pageInfo.ValueKind == JsonValueKind.Object
-            && pageInfo.TryGetProperty("hasNextPage", out var hasNext)
-            && hasNext.ValueKind == JsonValueKind.True
-            && pageInfo.TryGetProperty("endCursor", out var cursor)
-            && cursor.ValueKind == JsonValueKind.String
-            && !string.IsNullOrEmpty(cursor.GetString()))
+            && !(root.TryGetProperty("isLast", out var isLast) && isLast.ValueKind == JsonValueKind.True)
+            && root.TryGetProperty("nextPageToken", out var token)
+            && token.ValueKind == JsonValueKind.String
+            && !string.IsNullOrEmpty(token.GetString()))
         {
-            return cursor.GetString();
+            return token.GetString();
         }
         return null;
     }
@@ -229,7 +268,7 @@ public class JiraService
                 ["jql"] = jql,
                 ["fields"] = fieldArray,
                 ["maxResults"] = PageSize,
-                ["responseContentFormat"] = ContentFormat,
+                ["view"] = View,
             };
             if (nextPageToken != null) args["nextPageToken"] = nextPageToken;
 
@@ -306,7 +345,7 @@ public class JiraService
                 ["cloudId"] = _config.CloudId,
                 ["issueIdOrKey"] = issueKey,
                 ["fields"] = IssueFields().ToArray(),
-                ["responseContentFormat"] = ContentFormat,
+                ["view"] = View,
             });
         }
         catch (AtlassianToolException ex) when (ex.StatusCode == 404)
@@ -315,19 +354,15 @@ public class JiraService
             return null;
         }
 
-        var node = IssueNodes(root).Cast<JsonElement?>().FirstOrDefault();
-        var issue = node?.Deserialize<JiraIssueResponse>(JsonOptions);
+        // getJiraIssue returns the issue itself.
+        var issue = root.ValueKind == JsonValueKind.Object ? root.Deserialize<JiraIssueResponse>(JsonOptions) : null;
         return issue == null ? null : ToJiraIssue(issue, issueKey);
     }
 
     private JiraIssue ToJiraIssue(JiraIssueResponse issue, string fallbackKey)
     {
-        var budgetValue = _budgetFieldId != null
-            ? ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(_budgetFieldId))
-            : null;
-        var accountValue = _accountFieldId != null
-            ? ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(_accountFieldId))
-            : null;
+        var budgetValue = _budgetFieldId != null ? ExtractStringField(CustomFieldValue(issue.Fields, _budgetFieldId)) : null;
+        var accountValue = _accountFieldId != null ? ExtractStringField(CustomFieldValue(issue.Fields, _accountFieldId)) : null;
 
         return new JiraIssue
         {
@@ -347,6 +382,24 @@ public class JiraService
                 : null,
             ParentKey = issue.Fields?.Parent?.Key
         };
+    }
+
+    /// <summary>
+    /// The value of a custom field by ID. The server lists custom fields under <c>customFields</c>, keyed by
+    /// display name as <c>{"id": ..., "value": ...}</c> (no value when empty); a raw <c>customfield_*</c> key is
+    /// read as well.
+    /// </summary>
+    private static object? CustomFieldValue(JiraIssueFields? fields, string fieldId)
+    {
+        foreach (var entry in fields?.LabeledCustomFields?.Values ?? Enumerable.Empty<JsonElement>())
+        {
+            if (entry.ValueKind == JsonValueKind.Object
+                && entry.TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String && id.GetString() == fieldId)
+            {
+                return entry.TryGetProperty("value", out var value) ? value : null;
+            }
+        }
+        return fields?.OtherFields?.GetValueOrDefault(fieldId);
     }
 
     private static string? ExtractStringField(object? field)
@@ -556,7 +609,7 @@ public class JiraService
         return chunk.Where(named.Contains).ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
-    // Internal response models (the MCP issue nodes have the Jira REST shape)
+    // Internal response models (with view "full" the MCP issue nodes have the Jira REST shape, plus customFields)
     private sealed class JiraIssueResponse
     {
         public string? Key { get; set; }
@@ -577,8 +630,11 @@ public class JiraService
         [System.Text.Json.Serialization.JsonPropertyName("parent")]
         public JiraParentRef? Parent { get; set; }
 
+        [System.Text.Json.Serialization.JsonPropertyName("customFields")]
+        public Dictionary<string, JsonElement>? LabeledCustomFields { get; set; }
+
         [System.Text.Json.Serialization.JsonExtensionData]
-        public Dictionary<string, object?>? CustomFields { get; set; }
+        public Dictionary<string, object?>? OtherFields { get; set; } // e.g. raw customfield_* keys
     }
 
     private sealed class JiraParentRef
@@ -775,7 +831,7 @@ public class JiraService
             {
                 await SearchAsync(jql, ["issuetype", "fixVersions", budgetFieldId], issue =>
                 {
-                    var budget = ExtractStringField(issue.Fields?.CustomFields?.GetValueOrDefault(budgetFieldId));
+                    var budget = ExtractStringField(CustomFieldValue(issue.Fields, budgetFieldId));
                     if (string.IsNullOrWhiteSpace(budget)) return;
 
                     // Map every fix version of the leverance task (first one wins per version).

@@ -26,7 +26,8 @@ public sealed class AtlassianToolException(string message, int? statusCode) : Ex
 public static class AtlassianToolResult
 {
     /// <summary>
-    /// Parses tool text content as JSON. Error payloads such as
+    /// Parses tool text content as JSON and unwraps the <c>{"data":...}</c> envelope the v2 server puts
+    /// around every successful result. Error payloads such as
     /// <c>{"error":true,"message":...,"statusCode":400,"rateLimit":{"remaining":N}}</c> map to:
     /// 401/403 → <see cref="AtlassianAuthException"/>; 429 or <c>rateLimit.remaining == 0</c> →
     /// <see cref="AtlassianRateLimitException"/>; anything else → <see cref="AtlassianToolException"/>.
@@ -48,7 +49,8 @@ public static class AtlassianToolResult
         var errorFlag = root.ValueKind == JsonValueKind.Object
             && root.TryGetProperty("error", out var error)
             && error.ValueKind == JsonValueKind.True;
-        if (!isError && !errorFlag) return root;
+        if (!isError && !errorFlag)
+            return root.ValueKind == JsonValueKind.Object && root.TryGetProperty("data", out var data) ? data : root;
 
         throw Classify(root, text);
     }
