@@ -37,8 +37,7 @@
             <!-- Toggl settings -->
             <TabItem Header="Toggl">
                 <Grid Margin="10,8" ColumnDefinitions="160,*" RowDefinitions="Auto,Auto,Auto,Auto">
-                    <Label Grid.Row="0" Grid.Column="0" Content="API Token:"/>
-                    <TextBox Grid.Row="0" Grid.Column="1" x:Name="TogglApiToken" PasswordChar="●"/>
+                    <local:TogglSignInControl Grid.Row="0" Grid.Column="0" Grid.ColumnSpan="2" x:Name="TogglSignIn"/>
 
                     <Label Grid.Row="1" Grid.Column="0" Content="Organization ID:"/>
                     <TextBox Grid.Row="1" Grid.Column="1" x:Name="TogglOrgId"/>

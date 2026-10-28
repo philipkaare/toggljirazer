@@ -436,6 +436,19 @@ public class MainWindowTests : IDisposable
     }
 
     [AvaloniaFact]
+    public void Toggl_sign_out_is_saved_immediately()
+    {
+        var path = NewSettingsPath();
+        new SettingsService(path).Save(ValidConfig());
+        var window = new MainWindow(path);
+
+        window.TogglSignIn.SignOut();
+
+        Assert.Equal("", new SettingsService(path).Load().Toggl.ApiToken);
+        Assert.Equal(3, new SettingsService(path).Load().Toggl.ProjectId);
+    }
+
+    [AvaloniaFact]
     public async Task Wizard_cancel_changes_nothing()
     {
         var path = NewSettingsPath();

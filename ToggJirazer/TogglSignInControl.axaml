@@ -1,0 +1,30 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="ToggJirazer.TogglSignInControl">
+
+    <Grid ColumnDefinitions="160,*,Auto" RowDefinitions="Auto,Auto,Auto,Auto,Auto">
+        <Label Grid.Row="0" Grid.Column="0" Content="Toggl:"/>
+        <StackPanel Grid.Row="0" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="10" Margin="0,3">
+            <Button x:Name="SignOutButton" Content="Sign out" IsVisible="False" Click="SignOutButton_Click"/>
+            <TextBlock x:Name="StatusText" Text="Not signed in" VerticalAlignment="Center" TextWrapping="Wrap"/>
+        </StackPanel>
+
+        <!-- Shown while signed out: email and password, or an API token. -->
+        <Label Grid.Row="1" Grid.Column="0" Content="Email:" x:Name="EmailLabel"/>
+        <TextBox Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" x:Name="EmailBox"/>
+
+        <Label Grid.Row="2" Grid.Column="0" Content="Password:" x:Name="PasswordLabel"/>
+        <TextBox Grid.Row="2" Grid.Column="1" x:Name="PasswordBox" PasswordChar="●" IsUndoEnabled="False"
+                 Margin="0,3,4,3"/>
+        <Button Grid.Row="2" Grid.Column="2" x:Name="SignInButton" Content="Sign in" Click="SignInButton_Click"/>
+
+        <HyperlinkButton Grid.Row="3" Grid.Column="1" x:Name="UseTokenLink" Content="Use an API token instead"
+                         Click="UseTokenLink_Click"/>
+
+        <Label Grid.Row="4" Grid.Column="0" Content="API token:" x:Name="TokenLabel" IsVisible="False"/>
+        <TextBox Grid.Row="4" Grid.Column="1" x:Name="TokenBox" PasswordChar="●" IsUndoEnabled="False"
+                 Margin="0,3,4,3" IsVisible="False" Watermark="Paste the token from your Toggl profile"/>
+        <Button Grid.Row="4" Grid.Column="2" x:Name="CheckTokenButton" Content="Check token" IsVisible="False"
+                Click="CheckTokenButton_Click"/>
+    </Grid>
+</UserControl>

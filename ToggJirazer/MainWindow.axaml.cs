@@ -18,6 +18,7 @@ public partial class MainWindow : Window
 
     private readonly SettingsService _settingsService;
     private readonly AtlassianMcp? _mcp;
+    private readonly Func<TogglSetupService> _togglFactory;
     private bool _isRunning;
     private bool _isSetupOpen;
     private CancellationTokenSource? _preRunSignInCts; // set while the pre-run sign-in waits for the browser
@@ -28,11 +29,13 @@ public partial class MainWindow : Window
     // Required by Avalonia's runtime XAML loader and designer.
     public MainWindow() : this(SettingsLocator.UserSettingsPath()) { }
 
-    public MainWindow(string settingsPath, AtlassianMcp? mcp = null)
+    /// <param name="togglFactory">Toggl client for the Toggl tab's sign-in; without it the saved token isn't checked.</param>
+    public MainWindow(string settingsPath, AtlassianMcp? mcp = null, Func<TogglSetupService>? togglFactory = null)
     {
         InitializeComponent();
         _settingsService = new SettingsService(settingsPath);
         _mcp = mcp;
+        _togglFactory = togglFactory ?? (() => new TogglSetupService());
         ConfirmSignInAgain = ShowSignInAgainDialogAsync;
         RunReport = RunReportPipelineAsync;
         SignInAgain = ct => _mcp!.SignInAsync(ct, uri => Dispatcher.UIThread.Post(() =>
@@ -42,6 +45,14 @@ public partial class MainWindow : Window
         PopulateUiFromConfig(_settingsService.Load());
         Opened += MainWindow_Opened;
         JiraSignIn.SigningInChanged += (_, _) => UpdateButtonsForJiraSignIn();
+        TogglSignIn.TokenChanged += (_, _) => SaveAfterTogglSignIn();
+
+        if (togglFactory != null)
+        {
+            TogglSignIn.Initialize(togglFactory);
+            // Background check of who the saved token belongs to; never throws.
+            _ = TogglSignIn.RefreshStatusAsync();
+        }
 
         if (mcp != null)
         {
@@ -100,6 +111,7 @@ public partial class MainWindow : Window
                     AppendLog($"[ERROR] Could not save settings: {ex.Message}");
                 }
                 PopulateUiFromConfig(result);
+                _ = TogglSignIn.RefreshStatusAsync();
             }
         }
         catch (Exception ex)
@@ -115,7 +127,7 @@ public partial class MainWindow : Window
     }
 
     private Task<AppConfig?> ShowSetupWizardAsync(SetupWizardState state)
-        => new SetupWizardWindow(state, _mcp, () => new TogglSetupService()).ShowDialog<AppConfig?>(this);
+        => new SetupWizardWindow(state, _mcp, _togglFactory).ShowDialog<AppConfig?>(this);
 
     // -------------------------------------------------------------------------
     // Settings helpers
@@ -124,7 +136,7 @@ public partial class MainWindow : Window
     internal void PopulateUiFromConfig(AppConfig config)
     {
         _loadedConfig = config;
-        TogglApiToken.Text = config.Toggl.ApiToken;
+        TogglSignIn.SetToken(config.Toggl.ApiToken);
         TogglOrgId.Text = config.Toggl.OrganizationId == 0 ? string.Empty : config.Toggl.OrganizationId.ToString();
         TogglWorkspaceId.Text = config.Toggl.WorkspaceId == 0 ? string.Empty : config.Toggl.WorkspaceId.ToString();
         TogglProjectId.Text = config.Toggl.ProjectId == 0 ? string.Empty : config.Toggl.ProjectId.ToString();
@@ -176,7 +188,7 @@ public partial class MainWindow : Window
         {
             Toggl = new TogglConfig
             {
-                ApiToken = TogglApiToken.Text ?? string.Empty,
+                ApiToken = TogglSignIn.ApiToken,
                 OrganizationId = orgId,
                 WorkspaceId = wsId,
                 ProjectId = projId
@@ -224,6 +236,20 @@ public partial class MainWindow : Window
         {
             _settingsService.Save(ReadConfigFromUi());
             AppendLog("Settings saved.");
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"[ERROR] Could not save settings: {ex.Message}");
+        }
+    }
+
+    /// <summary>Signing in or out on the Toggl tab takes effect immediately, like the Jira tab's sign-in.</summary>
+    private void SaveAfterTogglSignIn()
+    {
+        try
+        {
+            _settingsService.Save(ReadConfigFromUi());
+            AppendLog(TogglSignIn.ApiToken.Length > 0 ? "Signed in to Toggl; settings saved." : "Signed out of Toggl; settings saved.");
         }
         catch (Exception ex)
         {
@@ -310,6 +336,7 @@ public partial class MainWindow : Window
         SendEmailNowButton.IsEnabled = false;
         // Signing in or out mid-run would drop the connection the run uses.
         JiraSignIn.IsEnabled = false;
+        TogglSignIn.IsEnabled = false;
         LogTextBox.Text = string.Empty;
         ProgressBar.IsIndeterminate = true;
         ProgressBar.Value = 0;
@@ -386,6 +413,7 @@ public partial class MainWindow : Window
             SetupButton.IsEnabled = true;
             SendEmailNowButton.IsEnabled = true;
             JiraSignIn.IsEnabled = true;
+            TogglSignIn.IsEnabled = true;
             _isRunning = false;
         }
     }

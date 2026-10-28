@@ -10,7 +10,7 @@ public enum SetupStep { Welcome, TogglSignIn, TogglProject, JiraSignIn, JiraFiel
 /// </summary>
 public sealed class SetupWizardState
 {
-    private const string TokenPlaceholder = "your-toggl-api-token";
+    internal const string TokenPlaceholder = "your-toggl-api-token";
 
     public SetupWizardState(AppConfig startingConfig)
     {
